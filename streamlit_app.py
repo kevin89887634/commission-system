@@ -1,6 +1,6 @@
 """
-💰 佣金管理系统 v2.1
-流程: 上传数据 → 批量编辑分单 → 计算佣金 → 对账核验
+💰 佣金管理系统 v2.2
+修复：公式改为 Premium × PersonRate × SplitRatio
 """
 import streamlit as st
 import pandas as pd
@@ -10,7 +10,7 @@ from datetime import datetime
 
 # ==================== 工具函数 ====================
 def normalize_policy(policy_num):
-    """标准化保单号"""
+    """标准化保单号：移除LS/NL/L前缀和00后缀"""
     if policy_num is None:
         return ""
     s = str(policy_num).strip()
@@ -45,29 +45,10 @@ def is_valid_policy(policy):
         return False
     return True
 
-# ==================== 数据导入 ====================
-def import_new_business(file):
-    """导入并清洗 New Business Report"""
-    df = pd.read_excel(file, skiprows=4)
-    cols = ['Policy', 'Insured', 'Recruiter', 'Status', 'Delivery',
-            'Action', 'SubmitDate', 'Modal', 'Product', 'Sent',
-            'Owner', 'SubmitMethod', 'CaseManager', 'AAP',
-            'AgentNum', 'Agency', 'CompanyCode', 'Bookmark']
-    df.columns = cols[:len(df.columns)]
-
-    # 清洗
-    df = df[df['Policy'].apply(is_valid_policy)]
-    df['Policy_Norm'] = df['Policy'].apply(normalize_policy)
-    df['Modal'] = df['Modal'].apply(safe_float)
-    df['AAP'] = df['AAP'].apply(safe_float)
-    df = df[df['AAP'] > 0]
-    df = df.reset_index(drop=True)
-    return df
-
 # ==================== 页面配置 ====================
 st.set_page_config(page_title="佣金管理系统", page_icon="💰", layout="wide")
 
-# Session State 初始化
+# Session State
 if 'df_raw' not in st.session_state:
     st.session_state.df_raw = None
 if 'df_splits' not in st.session_state:
@@ -78,21 +59,17 @@ if 'df_results' not in st.session_state:
 # 侧边栏
 with st.sidebar:
     st.title("💰 佣金管理系统")
-    st.caption("v2.1")
+    st.caption("v2.2")
     st.markdown("---")
-
     step = st.radio("操作步骤", [
         "1️⃣ 上传数据",
         "2️⃣ 编辑分单",
         "3️⃣ 计算佣金",
         "4️⃣ 对账核验"
     ])
-
     st.markdown("---")
     if st.session_state.df_raw is not None:
         st.success(f"✅ 已导入 {len(st.session_state.df_raw)} 条")
-    if st.session_state.df_splits is not None:
-        st.info(f"📋 已配置 {len(st.session_state.df_splits)} 条分单")
 
 # ==================== 第一步：上传数据 ====================
 if step == "1️⃣ 上传数据":
@@ -103,35 +80,65 @@ if step == "1️⃣ 上传数据":
     if file and st.button("📥 导入数据", type="primary"):
         with st.spinner("导入中..."):
             try:
-                df = import_new_business(file)
+                df = pd.read_excel(file, skiprows=4)
+                cols = ['Policy', 'Insured', 'Recruiter', 'Status', 'Delivery',
+                        'Action', 'SubmitDate', 'Modal', 'Product', 'Sent',
+                        'Owner', 'SubmitMethod', 'CaseManager', 'AAP',
+                        'AgentNum', 'Agency', 'CompanyCode', 'Bookmark']
+                df.columns = cols[:len(df.columns)]
+
+                # 清洗
+                df = df[df['Policy'].apply(is_valid_policy)]
+                df['Policy_Norm'] = df['Policy'].apply(normalize_policy)
+                df['Modal'] = df['Modal'].apply(safe_float)
+                df['AAP'] = df['AAP'].apply(safe_float)
+                df = df[df['AAP'] > 0].reset_index(drop=True)
+
                 st.session_state.df_raw = df
 
-                # 生成初始分单表（每个保单一行，默认Recruiter 55%分佣100%）
+                # 生成分单表
                 splits_data = []
                 for _, row in df.iterrows():
+                    modal = safe_float(row['Modal'])
+                    aap = safe_float(row['AAP'])
+                    # 判断缴费类型
+                    if modal > 0 and aap / modal > 6:
+                        pay_type = '月缴'
+                        premium = modal  # 月缴保费
+                    else:
+                        pay_type = '年缴'
+                        premium = aap  # 年缴保费
+
+                    # 判断佣金比例
+                    product = str(row.get('Product', '')).lower()
+                    if 'term' in product:
+                        comm_rate = 0.67
+                    else:
+                        comm_rate = 0.80
+
                     splits_data.append({
                         'Policy': row['Policy_Norm'],
                         'Insured': row.get('Insured', ''),
-                        'AAP': row['AAP'],
-                        'Product': row.get('Product', ''),
+                        'AAP': aap,
+                        'Modal': modal,
+                        'PayType': pay_type,
+                        'Premium': premium,
+                        'CommRate': comm_rate,
                         'Person1': row.get('Recruiter', ''),
                         'Rate1': 0.55,
                         'Split1': 1.0,
                         'Person2': '',
                         'Rate2': 0.55,
                         'Split2': 0.0,
-                        'Person3': '',
-                        'Rate3': 0.55,
-                        'Split3': 0.0,
                     })
-                st.session_state.df_splits = pd.DataFrame(splits_data)
-                st.session_state.df_results = None  # 清空计算结果
 
+                st.session_state.df_splits = pd.DataFrame(splits_data)
+                st.session_state.df_results = None
                 st.success(f"✅ 导入成功！{len(df)} 条有效记录")
+
             except Exception as e:
                 st.error(f"❌ 导入失败: {e}")
 
-    # 预览
     if st.session_state.df_raw is not None:
         st.markdown("### 📊 数据预览")
         st.dataframe(
@@ -147,15 +154,14 @@ elif step == "2️⃣ 编辑分单":
         st.warning("⚠️ 请先在第1步上传数据")
     else:
         st.info("""
-        💡 **使用说明**：
-        - 每行最多3人分单（Person1/2/3）
-        - Rate = 个人佣金比例（如0.55表示55%）
-        - Split = 分佣比例（如0.5表示50%）
-        - **Split1 + Split2 + Split3 必须 = 1（100%）**
-        - 不需要的人员留空，Split填0
+        💡 **公式说明**：
+        - **个人佣金 = Premium × Rate × Split**
+        - Premium = 月缴保费(Modal) 或 年缴保费(AAP)
+        - Rate = 个人佣金比例 (如0.55=55%)
+        - Split = 分佣比例 (Split1 + Split2 必须 = 100%)
         """)
 
-        # 可编辑表格
+        # 编辑表格
         edited_df = st.data_editor(
             st.session_state.df_splits,
             use_container_width=True,
@@ -164,46 +170,43 @@ elif step == "2️⃣ 编辑分单":
                 'Policy': st.column_config.TextColumn('保单号', disabled=True, width="small"),
                 'Insured': st.column_config.TextColumn('被保人', disabled=True, width="medium"),
                 'AAP': st.column_config.NumberColumn('AAP', disabled=True, format="$%.0f", width="small"),
-                'Product': st.column_config.TextColumn('产品', disabled=True, width="small"),
+                'Modal': st.column_config.NumberColumn('Modal', disabled=True, format="$%.2f", width="small"),
+                'PayType': st.column_config.TextColumn('类型', disabled=True, width="small"),
+                'Premium': st.column_config.NumberColumn('Premium', disabled=True, format="$%.2f", width="small"),
+                'CommRate': st.column_config.NumberColumn('佣金率', disabled=True, format="%.0f%%", width="small"),
                 'Person1': st.column_config.TextColumn('人员1', width="medium"),
                 'Rate1': st.column_config.NumberColumn('比例1', min_value=0, max_value=1, step=0.05, format="%.0f%%", width="small"),
                 'Split1': st.column_config.NumberColumn('分佣1', min_value=0, max_value=1, step=0.1, format="%.0f%%", width="small"),
                 'Person2': st.column_config.TextColumn('人员2', width="medium"),
                 'Rate2': st.column_config.NumberColumn('比例2', min_value=0, max_value=1, step=0.05, format="%.0f%%", width="small"),
                 'Split2': st.column_config.NumberColumn('分佣2', min_value=0, max_value=1, step=0.1, format="%.0f%%", width="small"),
-                'Person3': st.column_config.TextColumn('人员3', width="medium"),
-                'Rate3': st.column_config.NumberColumn('比例3', min_value=0, max_value=1, step=0.05, format="%.0f%%", width="small"),
-                'Split3': st.column_config.NumberColumn('分佣3', min_value=0, max_value=1, step=0.1, format="%.0f%%", width="small"),
             },
             hide_index=True
         )
 
-        # 验证分佣比例
-        st.markdown("### ✅ 验证分佣比例")
+        # 验证
+        st.markdown("### ✅ 验证")
         errors = []
         for idx, row in edited_df.iterrows():
-            total = safe_float(row['Split1']) + safe_float(row['Split2']) + safe_float(row['Split3'])
-            if abs(total - 1.0) > 0.001:
-                errors.append(f"❌ {row['Policy']}: 分佣总和 = {total*100:.0f}% (应为100%)")
+            s1 = safe_float(row['Split1'])
+            s2 = safe_float(row['Split2'])
+            total = s1 + s2
+            if abs(total - 1.0) > 0.001 and total > 0:
+                errors.append(f"❌ {row['Policy']}: Split总和={total*100:.0f}% (应为100%)")
 
         if errors:
-            for err in errors[:10]:  # 最多显示10条
+            for err in errors[:10]:
                 st.error(err)
-            if len(errors) > 10:
-                st.error(f"... 还有 {len(errors)-10} 条错误")
         else:
-            st.success("✅ 所有保单分佣比例正确 (100%)")
+            st.success("✅ 所有分佣比例正确")
 
-        # 保存按钮
-        col1, col2 = st.columns([1, 3])
-        with col1:
-            if st.button("💾 保存分单配置", type="primary"):
-                if errors:
-                    st.error("❌ 请先修正分佣比例错误")
-                else:
-                    st.session_state.df_splits = edited_df
-                    st.session_state.df_results = None  # 清空旧结果
-                    st.success("✅ 配置已保存！请前往第3步计算佣金")
+        if st.button("💾 保存配置", type="primary"):
+            if errors:
+                st.error("❌ 请先修正错误")
+            else:
+                st.session_state.df_splits = edited_df
+                st.session_state.df_results = None
+                st.success("✅ 已保存！请前往第3步计算")
 
 # ==================== 第三步：计算佣金 ====================
 elif step == "3️⃣ 计算佣金":
@@ -212,246 +215,236 @@ elif step == "3️⃣ 计算佣金":
     if st.session_state.df_splits is None:
         st.warning("⚠️ 请先完成第1、2步")
     else:
+        st.markdown("""
+        **计算公式**：
+        - Gross Comm = Premium × CommRate (80%或67%)
+        - Override = Premium × 48%
+        - 个人佣金 = Premium × PersonRate × SplitRatio
+        - 平台剩余 = Gross + Override - 已分配佣金
+        """)
+
         if st.button("🔄 开始计算", type="primary"):
-            with st.spinner("计算中..."):
-                results = []
-                df_splits = st.session_state.df_splits
+            results = []
+            df = st.session_state.df_splits
 
-                for _, row in df_splits.iterrows():
-                    policy = row['Policy']
-                    aap = safe_float(row['AAP'])
-                    insured = row['Insured']
-                    product = row['Product']
+            for _, row in df.iterrows():
+                policy = row['Policy']
+                insured = row['Insured']
+                aap = safe_float(row['AAP'])
+                premium = safe_float(row['Premium'])
+                comm_rate = safe_float(row['CommRate'])
+                pay_type = row['PayType']
 
-                    # 判断佣金比例 (80%/67%/2%)
-                    if aap > 10000:  # 大额保单可能是2%
-                        comm_rate = 0.02
-                    elif 'term' in str(product).lower():
-                        comm_rate = 0.67
-                    else:
-                        comm_rate = 0.80
+                # 计算总佣金
+                gross_comm = premium * comm_rate
+                override_comm = premium * 0.48
+                total_comm = gross_comm + override_comm
 
-                    # 总佣金 = AAP × (comm_rate + 48%)
-                    total_gross = aap * comm_rate
-                    total_override = aap * 0.48
-                    total_comm = total_gross + total_override
+                # 计算每人
+                distributed = 0
+                for i in [1, 2]:
+                    person = str(row.get(f'Person{i}', '')).strip()
+                    rate = safe_float(row.get(f'Rate{i}', 0))
+                    split = safe_float(row.get(f'Split{i}', 0))
 
-                    # 计算每人佣金
-                    total_distributed = 0
-                    for i in [1, 2, 3]:
-                        person = row.get(f'Person{i}', '')
-                        rate = safe_float(row.get(f'Rate{i}', 0))
-                        split = safe_float(row.get(f'Split{i}', 0))
+                    if person and split > 0:
+                        # 公式: Premium × Rate × Split
+                        person_comm = premium * rate * split
+                        distributed += person_comm
 
-                        if person and split > 0:
-                            person_comm = total_comm * rate * split
-                            total_distributed += person_comm
-
-                            results.append({
-                                'Policy': policy,
-                                'Insured': insured,
-                                'AAP': aap,
-                                'CommRate': comm_rate,
-                                'TotalComm': total_comm,
-                                'Person': person,
-                                'PersonRate': rate,
-                                'SplitRatio': split,
-                                'PersonComm': person_comm
-                            })
-
-                    # 平台剩余
-                    platform = total_comm - total_distributed
-                    if platform > 0.01:
                         results.append({
                             'Policy': policy,
                             'Insured': insured,
                             'AAP': aap,
+                            'Premium': premium,
+                            'PayType': pay_type,
                             'CommRate': comm_rate,
+                            'GrossComm': gross_comm,
+                            'Override': override_comm,
                             'TotalComm': total_comm,
-                            'Person': '【平台】',
-                            'PersonRate': 0,
-                            'SplitRatio': 0,
-                            'PersonComm': platform
+                            'Person': person,
+                            'Rate': rate,
+                            'Split': split,
+                            'PersonComm': person_comm,
                         })
 
-                st.session_state.df_results = pd.DataFrame(results)
-                st.success("✅ 计算完成！")
+                # 平台剩余
+                platform = total_comm - distributed
+                if platform > 0.01:
+                    results.append({
+                        'Policy': policy,
+                        'Insured': insured,
+                        'AAP': aap,
+                        'Premium': premium,
+                        'PayType': pay_type,
+                        'CommRate': comm_rate,
+                        'GrossComm': gross_comm,
+                        'Override': override_comm,
+                        'TotalComm': total_comm,
+                        'Person': '【平台】',
+                        'Rate': 0,
+                        'Split': 0,
+                        'PersonComm': platform,
+                    })
 
-        # 显示结果
+            st.session_state.df_results = pd.DataFrame(results)
+            st.success("✅ 计算完成！")
+
         if st.session_state.df_results is not None:
-            df_results = st.session_state.df_results
+            df_r = st.session_state.df_results
 
-            # 汇总统计
-            st.markdown("### 📊 汇总统计")
-            total_aap = df_results.drop_duplicates('Policy')['AAP'].sum()
-            total_comm = df_results['PersonComm'].sum()
+            # 汇总
+            st.markdown("### 📊 汇总")
+            unique_policies = df_r.drop_duplicates('Policy')
+            total_premium = unique_policies['Premium'].sum()
+            total_gross = unique_policies['GrossComm'].sum()
+            total_override = unique_policies['Override'].sum()
+            total_comm = df_r['PersonComm'].sum()
 
-            col1, col2, col3 = st.columns(3)
-            col1.metric("保单数", len(df_results['Policy'].unique()))
-            col2.metric("总AAP", format_currency(total_aap))
-            col3.metric("总佣金", format_currency(total_comm))
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("保单数", len(unique_policies))
+            c2.metric("总Premium", format_currency(total_premium))
+            c3.metric("总Gross", format_currency(total_gross))
+            c4.metric("总Override", format_currency(total_override))
 
-            # 按人员汇总
+            # 按人员
             st.markdown("### 👥 按人员汇总")
-            person_summary = df_results.groupby('Person').agg({
-                'Policy': 'count',
-                'PersonComm': 'sum'
-            }).reset_index()
-            person_summary.columns = ['人员', '保单数', '总佣金']
-            person_summary = person_summary.sort_values('总佣金', ascending=False)
-
-            st.dataframe(
-                person_summary.style.format({'总佣金': '${:,.2f}'}),
-                use_container_width=True
-            )
+            person_sum = df_r.groupby('Person')['PersonComm'].sum().reset_index()
+            person_sum.columns = ['人员', '佣金']
+            person_sum = person_sum.sort_values('佣金', ascending=False)
+            st.dataframe(person_sum.style.format({'佣金': '${:,.2f}'}), use_container_width=True)
 
             # 明细
-            st.markdown("### 📋 佣金明细")
+            st.markdown("### 📋 明细")
+            display_cols = ['Policy', 'Insured', 'Premium', 'PayType', 'GrossComm', 'Override', 'Person', 'Rate', 'Split', 'PersonComm']
             st.dataframe(
-                df_results.style.format({
-                    'AAP': '${:,.0f}',
-                    'CommRate': '{:.0%}',
-                    'TotalComm': '${:,.2f}',
-                    'PersonRate': '{:.0%}',
-                    'SplitRatio': '{:.0%}',
-                    'PersonComm': '${:,.2f}'
+                df_r[display_cols].style.format({
+                    'Premium': '${:,.2f}',
+                    'GrossComm': '${:,.2f}',
+                    'Override': '${:,.2f}',
+                    'Rate': '{:.0%}',
+                    'Split': '{:.0%}',
+                    'PersonComm': '${:,.2f}',
                 }),
                 use_container_width=True
             )
 
             # 导出
-            st.markdown("### 📥 导出报表")
+            st.markdown("### 📥 导出")
             output = BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                person_summary.to_excel(writer, sheet_name='人员汇总', index=False)
-                df_results.to_excel(writer, sheet_name='佣金明细', index=False)
+                person_sum.to_excel(writer, sheet_name='人员汇总', index=False)
+                df_r.to_excel(writer, sheet_name='佣金明细', index=False)
                 st.session_state.df_splits.to_excel(writer, sheet_name='分单配置', index=False)
             output.seek(0)
+            st.download_button("📥 下载Excel", data=output,
+                             file_name=f"佣金报表_{datetime.now().strftime('%Y%m%d')}.xlsx")
 
-            st.download_button(
-                "📥 下载Excel报表",
-                data=output,
-                file_name=f"佣金报表_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-
-# ==================== 第四步：对账核验 ====================
+# ==================== 第四步：对账 ====================
 elif step == "4️⃣ 对账核验":
     st.header("4️⃣ 对账核验")
 
     if st.session_state.df_results is None:
-        st.warning("⚠️ 请先完成第3步佣金计算")
+        st.warning("⚠️ 请先完成第3步")
     else:
-        st.info("💡 上传保险公司或平台的对账单，与计算结果进行比对")
+        st.info("上传对账单进行比对")
 
         col1, col2 = st.columns(2)
-
         with col1:
-            st.markdown("#### 🏢 保险公司对账单")
-            ins_file = st.file_uploader("Gross Commission", type=['xlsx', 'xls'], key='ins')
-
+            st.markdown("#### 🏢 Gross Commission")
+            gross_file = st.file_uploader("NLG Payable/Pending Gross", type=['xlsx'], key='gross')
         with col2:
-            st.markdown("#### 📋 平台Override对账单")
-            plat_file = st.file_uploader("Override明细", type=['xlsx', 'xls'], key='plat')
+            st.markdown("#### 📋 Override")
+            override_file = st.file_uploader("Override by Policy", type=['xlsx'], key='override')
 
         if st.button("🔍 开始对账", type="primary"):
-            df_results = st.session_state.df_results
+            df_r = st.session_state.df_results
 
             # 按保单汇总计算结果
-            calc_by_policy = df_results.groupby('Policy').agg({
-                'AAP': 'first',
-                'TotalComm': 'first',
-                'PersonComm': 'sum'
+            calc = df_r.groupby('Policy').agg({
+                'GrossComm': 'first',
+                'Override': 'first',
             }).reset_index()
 
-            reconcile_data = []
-
             # 读取对账单
-            ins_data = {}
-            plat_data = {}
+            actual_gross = {}
+            actual_override = {}
 
-            if ins_file:
+            if gross_file:
                 try:
-                    df_ins = pd.read_excel(ins_file, skiprows=3)
-                    df_ins['Policy_Norm'] = df_ins.iloc[:, 0].apply(normalize_policy)
-                    for _, row in df_ins.iterrows():
-                        p = row['Policy_Norm']
+                    df_g = pd.read_excel(gross_file, skiprows=4)
+                    for _, row in df_g.iterrows():
+                        p = normalize_policy(row.iloc[2])  # Policy # 在第3列
                         if p:
-                            ins_data[p] = safe_float(row.iloc[6]) if len(row) > 6 else 0
-                except:
-                    st.error("保险公司对账单格式错误")
+                            amt = safe_float(row.iloc[6])  # Gross Com. Paid 在第7列
+                            actual_gross[p] = actual_gross.get(p, 0) + amt
+                except Exception as e:
+                    st.error(f"Gross文件格式错误: {e}")
 
-            if plat_file:
+            if override_file:
                 try:
-                    df_plat = pd.read_excel(plat_file, skiprows=2)
-                    df_plat['Policy_Norm'] = df_plat.iloc[:, 2].apply(normalize_policy)
-                    for _, row in df_plat.iterrows():
-                        p = row['Policy_Norm']
+                    df_o = pd.read_excel(override_file, skiprows=1)
+                    for _, row in df_o.iterrows():
+                        p = normalize_policy(row.iloc[2])  # Policy# 在第3列
                         if p:
-                            plat_data[p] = safe_float(row.iloc[5]) if len(row) > 5 else 0
-                except:
-                    st.error("平台对账单格式错误")
+                            amt = safe_float(row.iloc[5])  # Total Amount 在第6列
+                            actual_override[p] = actual_override.get(p, 0) + amt
+                except Exception as e:
+                    st.error(f"Override文件格式错误: {e}")
 
             # 对账
-            for _, row in calc_by_policy.iterrows():
+            reconcile = []
+            for _, row in calc.iterrows():
                 policy = row['Policy']
-                calc_comm = row['TotalComm']
+                calc_gross = row['GrossComm']
+                calc_override = row['Override']
 
-                actual_ins = ins_data.get(policy, 0)
-                actual_plat = plat_data.get(policy, 0)
-                actual_total = actual_ins + actual_plat
+                act_gross = actual_gross.get(policy, 0)
+                act_override = actual_override.get(policy, 0)
 
-                diff = actual_total - calc_comm
-                status = '✅' if abs(diff) < 1 else '❌'
+                gross_diff = act_gross - calc_gross
+                override_diff = act_override - calc_override
 
-                reconcile_data.append({
+                gross_ok = '✅' if abs(gross_diff) < 1 else ('⚠️' if act_gross == 0 else '❌')
+                override_ok = '✅' if abs(override_diff) < 1 else ('⚠️' if act_override == 0 else '❌')
+
+                reconcile.append({
                     '保单号': policy,
-                    '计算佣金': calc_comm,
-                    '保险公司': actual_ins,
-                    '平台Override': actual_plat,
-                    '实际合计': actual_total,
-                    '差额': diff,
-                    '状态': status
+                    '计算Gross': calc_gross,
+                    '实际Gross': act_gross,
+                    'Gross差额': gross_diff,
+                    'Gross状态': gross_ok,
+                    '计算Override': calc_override,
+                    '实际Override': act_override,
+                    'Override差额': override_diff,
+                    'Override状态': override_ok,
                 })
 
-            df_reconcile = pd.DataFrame(reconcile_data)
+            df_rec = pd.DataFrame(reconcile)
 
             # 统计
             st.markdown("### 📊 对账结果")
-            ok_count = (df_reconcile['状态'] == '✅').sum()
-            total_count = len(df_reconcile)
+            gross_match = (df_rec['Gross状态'] == '✅').sum()
+            override_match = (df_rec['Override状态'] == '✅').sum()
+            total = len(df_rec)
 
-            col1, col2, col3 = st.columns(3)
-            col1.metric("总保单", total_count)
-            col2.metric("匹配", ok_count)
-            col3.metric("差异", total_count - ok_count)
+            c1, c2, c3 = st.columns(3)
+            c1.metric("总保单", total)
+            c2.metric("Gross匹配", f"{gross_match}/{total}")
+            c3.metric("Override匹配", f"{override_match}/{total}")
 
-            # 差异记录
-            df_diff = df_reconcile[df_reconcile['状态'] == '❌']
+            # 差异
+            df_diff = df_rec[(df_rec['Gross状态'] == '❌') | (df_rec['Override状态'] == '❌')]
             if len(df_diff) > 0:
                 st.markdown("### ❌ 差异记录")
-                st.dataframe(
-                    df_diff.style.format({
-                        '计算佣金': '${:,.2f}',
-                        '保险公司': '${:,.2f}',
-                        '平台Override': '${:,.2f}',
-                        '实际合计': '${:,.2f}',
-                        '差额': '${:,.2f}'
-                    }),
-                    use_container_width=True
-                )
-            else:
-                st.success("✅ 全部匹配！")
+                st.dataframe(df_diff.style.format({
+                    '计算Gross': '${:,.2f}', '实际Gross': '${:,.2f}', 'Gross差额': '${:,.2f}',
+                    '计算Override': '${:,.2f}', '实际Override': '${:,.2f}', 'Override差额': '${:,.2f}',
+                }), use_container_width=True)
 
-            # 完整对账表
+            # 完整表
             st.markdown("### 📋 完整对账表")
-            st.dataframe(
-                df_reconcile.style.format({
-                    '计算佣金': '${:,.2f}',
-                    '保险公司': '${:,.2f}',
-                    '平台Override': '${:,.2f}',
-                    '实际合计': '${:,.2f}',
-                    '差额': '${:,.2f}'
-                }),
-                use_container_width=True
-            )
+            st.dataframe(df_rec.style.format({
+                '计算Gross': '${:,.2f}', '实际Gross': '${:,.2f}', 'Gross差额': '${:,.2f}',
+                '计算Override': '${:,.2f}', '实际Override': '${:,.2f}', 'Override差额': '${:,.2f}',
+            }), use_container_width=True)
