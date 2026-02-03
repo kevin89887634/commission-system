@@ -264,8 +264,90 @@ elif step == "2️⃣ 编辑分单":
         st.warning("⚠️ 请先上传并导入数据")
         st.stop()
 
-    st.markdown("### 📝 编辑分佣信息")
-    st.caption("可以修改分佣人员和比例，Split1 + Split2 应该等于 1.0")
+    # ========== 批量设置区域 ==========
+    st.markdown("### 🔧 批量设置")
+    st.caption("选择要批量修改的行，然后设置统一的分佣人和比例")
+
+    # 获取所有唯一的分佣人
+    existing_persons = set()
+    for _, row in st.session_state.df_splits.iterrows():
+        if row.get('Person1'):
+            existing_persons.add(str(row['Person1']))
+        if row.get('Person2'):
+            existing_persons.add(str(row['Person2']))
+    existing_persons = sorted([p for p in existing_persons if p])
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("**选择要修改的行**")
+        # 行选择
+        all_policies = st.session_state.df_splits['Policy'].tolist()
+        select_all = st.checkbox("全选", value=False)
+        if select_all:
+            selected_rows = st.multiselect(
+                "选择保单",
+                options=all_policies,
+                default=all_policies,
+                label_visibility="collapsed"
+            )
+        else:
+            selected_rows = st.multiselect(
+                "选择保单",
+                options=all_policies,
+                default=[],
+                label_visibility="collapsed"
+            )
+
+    with col2:
+        st.markdown("**设置分佣信息**")
+
+        # 分佣人1
+        batch_person1 = st.text_input("分佣人1", placeholder="输入姓名")
+        bcol1, bcol2 = st.columns(2)
+        with bcol1:
+            batch_rate1 = st.number_input("比例1", min_value=0.0, max_value=1.0, value=0.55, step=0.01)
+        with bcol2:
+            batch_split1 = st.number_input("分成1", min_value=0.0, max_value=1.0, value=1.0, step=0.1)
+
+        # 分佣人2
+        batch_person2 = st.text_input("分佣人2 (可选)", placeholder="留空则不分")
+        bcol3, bcol4 = st.columns(2)
+        with bcol3:
+            batch_rate2 = st.number_input("比例2", min_value=0.0, max_value=1.0, value=0.55, step=0.01)
+        with bcol4:
+            batch_split2 = st.number_input("分成2", min_value=0.0, max_value=1.0, value=0.0, step=0.1)
+
+    # 验证分成总和
+    total_split = batch_split1 + batch_split2
+    if abs(total_split - 1.0) > 0.001:
+        st.error(f"⚠️ 分成总和必须等于1.0，当前为 {total_split:.2f}")
+        can_apply = False
+    else:
+        st.success(f"✅ 分成总和 = {total_split:.2f}")
+        can_apply = True
+
+    # 应用批量修改
+    if st.button("📝 应用批量修改", type="primary", disabled=not can_apply or len(selected_rows) == 0):
+        df = st.session_state.df_splits.copy()
+        for idx, row in df.iterrows():
+            if row['Policy'] in selected_rows:
+                if batch_person1:
+                    df.at[idx, 'Person1'] = batch_person1
+                df.at[idx, 'Rate1'] = batch_rate1
+                df.at[idx, 'Split1'] = batch_split1
+                df.at[idx, 'Person2'] = batch_person2
+                df.at[idx, 'Rate2'] = batch_rate2
+                df.at[idx, 'Split2'] = batch_split2
+        st.session_state.df_splits = df
+        st.success(f"✅ 已批量修改 {len(selected_rows)} 条记录")
+        st.rerun()
+
+    st.markdown("---")
+
+    # ========== 编辑表格区域 ==========
+    st.markdown("### 📝 逐条编辑")
+    st.caption("也可以直接在表格中编辑单条记录")
 
     # 编辑表格
     edited_df = st.data_editor(
@@ -289,7 +371,28 @@ elif step == "2️⃣ 编辑分单":
         }
     )
 
-    if st.button("💾 保存修改", type="primary"):
+    # ========== 验证和保存 ==========
+    st.markdown("---")
+
+    # 验证所有行的分成总和
+    errors = []
+    for idx, row in edited_df.iterrows():
+        split_sum = safe_float(row.get('Split1', 0)) + safe_float(row.get('Split2', 0))
+        if abs(split_sum - 1.0) > 0.001:
+            errors.append(f"行 {idx}: 保单 {row['Policy']} 分成总和为 {split_sum:.2f}，应为 1.0")
+
+    if errors:
+        st.error("❌ 以下行的分成比例不正确：")
+        for err in errors[:10]:  # 最多显示10条
+            st.warning(err)
+        if len(errors) > 10:
+            st.warning(f"...还有 {len(errors) - 10} 条错误")
+        save_disabled = True
+    else:
+        st.success("✅ 所有行的分成比例验证通过")
+        save_disabled = False
+
+    if st.button("💾 保存修改", type="primary", disabled=save_disabled):
         st.session_state.df_splits = edited_df
         st.success("✅ 已保存")
 
