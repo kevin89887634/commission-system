@@ -80,22 +80,59 @@ if step == "1️⃣ 上传数据":
     if file and st.button("📥 导入数据", type="primary"):
         with st.spinner("导入中..."):
             try:
-                # NLG文件：第6行是表头(0-indexed第5行)，跳过前5行
-                df = pd.read_excel(file, skiprows=5)
-                cols = ['Policy', 'Insured', 'Recruiter', 'Status', 'Delivery',
-                        'Action', 'SubmitDate', 'Modal', 'Product', 'Sent',
-                        'Owner', 'SubmitMethod', 'CaseManager', 'AAP',
-                        'AgentNum', 'Agency', 'CompanyCode', 'Bookmark']
-                if len(df.columns) >= len(cols):
-                    df.columns = cols
-                else:
-                    df.columns = cols[:len(df.columns)]
+                # 第一步：读取原始数据，找到表头行
+                df_raw = pd.read_excel(file, header=None)
+
+                # 动态查找包含 "Policy" 的表头行
+                header_row = None
+                for idx in range(min(10, len(df_raw))):
+                    row_values = [str(v).lower() if pd.notna(v) else '' for v in df_raw.iloc[idx]]
+                    if any('policy' in v for v in row_values):
+                        header_row = idx
+                        break
+
+                if header_row is None:
+                    st.error("❌ 找不到表头行（包含'Policy'的行）")
+                    st.stop()
+
+                # 第二步：用正确的表头行重新读取
+                df = pd.read_excel(file, header=header_row)
+
+                # 标准化列名（处理"Policy #"等带特殊字符的列名）
+                col_mapping = {}
+                for col in df.columns:
+                    col_lower = str(col).lower().strip()
+                    if 'policy' in col_lower:
+                        col_mapping[col] = 'Policy'
+                    elif 'insured' in col_lower or 'annuitant' in col_lower:
+                        col_mapping[col] = 'Insured'
+                    elif col_lower == 'agent':
+                        col_mapping[col] = 'Recruiter'
+                    elif 'modal' in col_lower:
+                        col_mapping[col] = 'Modal'
+                    elif 'aap' in col_lower:
+                        col_mapping[col] = 'AAP'
+                    elif 'product' in col_lower:
+                        col_mapping[col] = 'Product'
+                    elif 'status' in col_lower:
+                        col_mapping[col] = 'Status'
+
+                df = df.rename(columns=col_mapping)
+
+                # 确保必要的列存在
+                required_cols = ['Policy', 'Modal', 'AAP']
+                missing = [c for c in required_cols if c not in df.columns]
+                if missing:
+                    st.error(f"❌ 缺少必要列: {missing}")
+                    st.error(f"当前列: {list(df.columns)}")
+                    st.stop()
 
                 # 清洗：过滤无效保单
                 df = df[df['Policy'].apply(is_valid_policy)]
                 df['Policy_Norm'] = df['Policy'].apply(normalize_policy)
                 df['Modal'] = df['Modal'].apply(safe_float)
                 df['AAP'] = df['AAP'].apply(safe_float)
+
                 # 过滤有效保费记录
                 df = df[(df['AAP'] > 0) | (df['Modal'] > 0)].reset_index(drop=True)
 
@@ -121,15 +158,20 @@ if step == "1️⃣ 上传数据":
                     else:
                         comm_rate = 0.80
 
+                        # 获取Recruiter（可能是Agent列）
+                    recruiter = ''
+                    if 'Recruiter' in row.index:
+                        recruiter = str(row['Recruiter']) if pd.notna(row['Recruiter']) else ''
+
                     splits_data.append({
                         'Policy': row['Policy_Norm'],
-                        'Insured': row.get('Insured', ''),
+                        'Insured': str(row.get('Insured', '')) if pd.notna(row.get('Insured', '')) else '',
                         'AAP': aap,
                         'Modal': modal,
                         'PayType': pay_type,
                         'Premium': premium,
                         'CommRate': comm_rate,
-                        'Person1': row.get('Recruiter', ''),
+                        'Person1': recruiter,
                         'Rate1': 0.55,
                         'Split1': 1.0,
                         'Person2': '',
@@ -146,8 +188,11 @@ if step == "1️⃣ 上传数据":
 
     if st.session_state.df_raw is not None:
         st.markdown("### 📊 数据预览")
+        # 只显示存在的列
+        preview_cols = ['Policy', 'Insured', 'Recruiter', 'Product', 'Modal', 'AAP']
+        available_cols = [c for c in preview_cols if c in st.session_state.df_raw.columns]
         st.dataframe(
-            st.session_state.df_raw[['Policy', 'Insured', 'Recruiter', 'Product', 'Modal', 'AAP']],
+            st.session_state.df_raw[available_cols],
             use_container_width=True
         )
 
