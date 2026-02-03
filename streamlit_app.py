@@ -80,19 +80,24 @@ if step == "1️⃣ 上传数据":
     if file and st.button("📥 导入数据", type="primary"):
         with st.spinner("导入中..."):
             try:
-                df = pd.read_excel(file, skiprows=4)
+                # NLG文件：第6行是表头(0-indexed第5行)，跳过前5行
+                df = pd.read_excel(file, skiprows=5)
                 cols = ['Policy', 'Insured', 'Recruiter', 'Status', 'Delivery',
                         'Action', 'SubmitDate', 'Modal', 'Product', 'Sent',
                         'Owner', 'SubmitMethod', 'CaseManager', 'AAP',
                         'AgentNum', 'Agency', 'CompanyCode', 'Bookmark']
-                df.columns = cols[:len(df.columns)]
+                if len(df.columns) >= len(cols):
+                    df.columns = cols
+                else:
+                    df.columns = cols[:len(df.columns)]
 
-                # 清洗
+                # 清洗：过滤无效保单
                 df = df[df['Policy'].apply(is_valid_policy)]
                 df['Policy_Norm'] = df['Policy'].apply(normalize_policy)
                 df['Modal'] = df['Modal'].apply(safe_float)
                 df['AAP'] = df['AAP'].apply(safe_float)
-                df = df[df['AAP'] > 0].reset_index(drop=True)
+                # 过滤有效保费记录
+                df = df[(df['AAP'] > 0) | (df['Modal'] > 0)].reset_index(drop=True)
 
                 st.session_state.df_raw = df
 
