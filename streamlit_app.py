@@ -1,16 +1,17 @@
 """
-💰 佣金管理系统 v2.5
-最终修复版：直接解析Excel，不依赖pandas的header检测
+💰 佣金管理系统 v2.7
+- 表格内选择+批量编辑
+- 数据保存/加载/删除
 """
 import streamlit as st
 import pandas as pd
 import re
+import json
 from io import BytesIO
 from datetime import datetime
 
 # ==================== 工具函数 ====================
 def normalize_policy(policy_num):
-    """标准化保单号：移除LS/NL/L前缀和00后缀"""
     if policy_num is None:
         return ""
     s = str(policy_num).strip()
@@ -27,13 +28,7 @@ def safe_float(value, default=0.0):
     except:
         return default
 
-def format_currency(amount):
-    if amount is None or pd.isna(amount):
-        return "$0.00"
-    return f"${amount:,.2f}"
-
 def is_valid_policy(policy):
-    """检查是否为有效保单号"""
     if policy is None or pd.isna(policy):
         return False
     s = str(policy).strip()
@@ -41,86 +36,81 @@ def is_valid_policy(policy):
         return False
     if not any(c.isdigit() for c in s):
         return False
-    # 必须以LS/NL/L开头或者纯数字
     if not (s.upper().startswith(('LS', 'NL', 'L')) or s[0].isdigit()):
         return False
     return True
 
 def parse_nlg_file(uploaded_file):
-    """
-    解析NLG文件，返回DataFrame
-    尝试多种方式读取直到成功
-    """
-    # 方法1: 尝试不同的header行
     for header_row in [5, 4, 6, 3, 1, 0]:
         try:
             df = pd.read_excel(uploaded_file, header=header_row, engine='openpyxl')
-            uploaded_file.seek(0)  # 重置文件指针
-
-            # 检查是否找到了Policy列
+            uploaded_file.seek(0)
             cols_lower = [str(c).lower() for c in df.columns]
             has_policy = any('policy' in c for c in cols_lower)
-
             if has_policy and len(df) > 0:
-                # 找到Policy列的实际名称
-                policy_col = None
-                for c in df.columns:
-                    if 'policy' in str(c).lower():
-                        policy_col = c
-                        break
-
-                # 检查第一行数据是否是有效的保单号
+                policy_col = next((c for c in df.columns if 'policy' in str(c).lower()), None)
                 first_val = str(df[policy_col].iloc[0]) if len(df) > 0 else ''
                 if is_valid_policy(first_val):
                     return df, header_row, None
-        except Exception as e:
+        except:
             uploaded_file.seek(0)
             continue
-
-    # 方法2: 读取原始数据，手动查找header
-    try:
-        uploaded_file.seek(0)
-        df_raw = pd.read_excel(uploaded_file, header=None, engine='openpyxl')
-        uploaded_file.seek(0)
-
-        # 遍历前15行找包含Policy的行
-        for idx in range(min(15, len(df_raw))):
-            row_str = ' '.join([str(v).lower() for v in df_raw.iloc[idx] if pd.notna(v)])
-            if 'policy' in row_str and ('insured' in row_str or 'agent' in row_str or 'modal' in row_str):
-                # 找到表头行
-                df = pd.read_excel(uploaded_file, header=idx, engine='openpyxl')
-                uploaded_file.seek(0)
-                return df, idx, None
-    except Exception as e:
-        return None, None, str(e)
-
     return None, None, "无法找到有效的表头行"
 
 # ==================== 页面配置 ====================
 st.set_page_config(page_title="佣金管理系统", page_icon="💰", layout="wide")
 
-# Session State
+# Session State 初始化
 if 'df_raw' not in st.session_state:
     st.session_state.df_raw = None
 if 'df_splits' not in st.session_state:
     st.session_state.df_splits = None
 if 'df_results' not in st.session_state:
     st.session_state.df_results = None
+if 'saved_datasets' not in st.session_state:
+    st.session_state.saved_datasets = {}  # {name: {'raw': df, 'splits': df, 'time': str}}
+if 'current_dataset' not in st.session_state:
+    st.session_state.current_dataset = None
 
-# 侧边栏
+# ==================== 侧边栏 ====================
 with st.sidebar:
     st.title("💰 佣金管理系统")
-    st.caption("v2.5 - 最终修复版")
+    st.caption("v2.7")
     st.markdown("---")
+
     step = st.radio("操作步骤", [
         "1️⃣ 上传数据",
         "2️⃣ 编辑分单",
         "3️⃣ 计算佣金",
         "4️⃣ 对账核验"
     ])
+
     st.markdown("---")
+
+    # 当前数据状态
     if st.session_state.df_raw is not None:
-        st.success(f"✅ 已导入 {len(st.session_state.df_raw)} 条")
+        st.success(f"✅ 当前: {len(st.session_state.df_raw)} 条")
+        if st.session_state.current_dataset:
+            st.caption(f"📁 {st.session_state.current_dataset}")
+
+    # 已保存的数据
+    if st.session_state.saved_datasets:
+        st.markdown("### 📂 已保存数据")
+        for name, data in list(st.session_state.saved_datasets.items()):
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                if st.button(f"📄 {name}", key=f"load_{name}", use_container_width=True):
+                    st.session_state.df_raw = data['raw'].copy()
+                    st.session_state.df_splits = data['splits'].copy()
+                    st.session_state.current_dataset = name
+                    st.session_state.df_results = None
+                    st.rerun()
+            with col2:
+                if st.button("🗑️", key=f"del_{name}"):
+                    del st.session_state.saved_datasets[name]
+                    if st.session_state.current_dataset == name:
+                        st.session_state.current_dataset = None
+                    st.rerun()
 
 # ==================== 第一步：上传数据 ====================
 if step == "1️⃣ 上传数据":
@@ -131,18 +121,10 @@ if step == "1️⃣ 上传数据":
     if uploaded_file and st.button("📥 导入数据", type="primary"):
         with st.spinner("导入中..."):
             try:
-                # 解析文件
                 df, header_row, error = parse_nlg_file(uploaded_file)
-
                 if error:
-                    st.error(f"❌ 解析失败: {error}")
+                    st.error(f"❌ {error}")
                     st.stop()
-
-                if df is None or len(df) == 0:
-                    st.error("❌ 未能读取到数据")
-                    st.stop()
-
-                st.info(f"📋 检测到表头在第 {header_row + 1} 行，共 {len(df)} 行数据")
 
                 # 标准化列名
                 col_map = {}
@@ -160,56 +142,26 @@ if step == "1️⃣ 上传数据":
                         col_map[col] = 'AAP'
                     elif 'product' in col_lower:
                         col_map[col] = 'Product'
-                    elif 'status' in col_lower:
-                        col_map[col] = 'Status'
-
                 df = df.rename(columns=col_map)
 
-                # 显示找到的列
-                st.info(f"📊 识别的列: {list(col_map.values())}")
-
-                # 检查必要列
-                if 'Policy' not in df.columns:
-                    st.error(f"❌ 找不到Policy列。当前列: {list(df.columns)}")
-                    st.stop()
-
-                # 过滤有效保单
-                df['_valid'] = df['Policy'].apply(is_valid_policy)
-                valid_count_before = df['_valid'].sum()
-                df = df[df['_valid']].drop(columns=['_valid'])
-
-                st.info(f"📋 有效保单: {valid_count_before} 条")
-
-                if len(df) == 0:
-                    st.error("❌ 过滤后没有有效数据")
-                    # 显示原始数据前5行帮助调试
-                    st.write("原始数据前5行:")
-                    uploaded_file.seek(0)
-                    df_debug = pd.read_excel(uploaded_file, header=header_row, engine='openpyxl')
-                    st.dataframe(df_debug.head())
-                    st.stop()
-
-                # 处理数值列
+                # 过滤和处理
+                df = df[df['Policy'].apply(is_valid_policy)]
                 df['Policy_Norm'] = df['Policy'].apply(normalize_policy)
                 df['Modal'] = df['Modal'].apply(safe_float) if 'Modal' in df.columns else 0
                 df['AAP'] = df['AAP'].apply(safe_float) if 'AAP' in df.columns else 0
-
-                # 过滤有保费的记录
                 df = df[(df['AAP'] > 0) | (df['Modal'] > 0)].reset_index(drop=True)
 
                 if len(df) == 0:
-                    st.error("❌ 没有找到有保费的记录（AAP或Modal > 0）")
+                    st.error("❌ 没有有效数据")
                     st.stop()
 
                 st.session_state.df_raw = df
 
-                # 生成分单表
+                # 生成分单表（带选择列）
                 splits_data = []
                 for _, row in df.iterrows():
                     modal = safe_float(row.get('Modal', 0))
                     aap = safe_float(row.get('AAP', 0))
-
-                    # 判断缴费类型
                     if modal > 0 and aap > 0 and aap / modal > 6:
                         pay_type = '月缴'
                         premium = modal
@@ -217,14 +169,12 @@ if step == "1️⃣ 上传数据":
                         pay_type = '年缴'
                         premium = aap if aap > 0 else modal
 
-                    # 判断佣金比例
                     product = str(row.get('Product', '')).lower()
                     comm_rate = 0.67 if 'term' in product else 0.80
-
-                    # 获取Recruiter
                     recruiter = str(row.get('Recruiter', '')) if pd.notna(row.get('Recruiter', '')) else ''
 
                     splits_data.append({
+                        '选择': False,  # 选择列
                         'Policy': row['Policy_Norm'],
                         'Insured': str(row.get('Insured', '')) if pd.notna(row.get('Insured', '')) else '',
                         'AAP': aap,
@@ -242,15 +192,32 @@ if step == "1️⃣ 上传数据":
 
                 st.session_state.df_splits = pd.DataFrame(splits_data)
                 st.session_state.df_results = None
-                st.success(f"✅ 导入成功！{len(df)} 条有效记录")
+                st.session_state.current_dataset = None
+                st.success(f"✅ 导入成功！{len(df)} 条记录")
 
             except Exception as e:
                 st.error(f"❌ 导入失败: {e}")
-                import traceback
-                st.code(traceback.format_exc())
 
-    # 数据预览
+    # 保存当前数据
     if st.session_state.df_raw is not None:
+        st.markdown("---")
+        st.markdown("### 💾 保存数据")
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            save_name = st.text_input("数据名称", value=f"数据_{datetime.now().strftime('%m%d_%H%M')}")
+        with col2:
+            st.write("")  # 占位
+            st.write("")
+            if st.button("💾 保存", type="primary"):
+                st.session_state.saved_datasets[save_name] = {
+                    'raw': st.session_state.df_raw.copy(),
+                    'splits': st.session_state.df_splits.copy(),
+                    'time': datetime.now().strftime('%Y-%m-%d %H:%M')
+                }
+                st.session_state.current_dataset = save_name
+                st.success(f"✅ 已保存: {save_name}")
+
+        # 数据预览
         st.markdown("### 📊 数据预览")
         preview_cols = [c for c in ['Policy', 'Insured', 'Recruiter', 'Product', 'Modal', 'AAP']
                        if c in st.session_state.df_raw.columns]
@@ -261,138 +228,118 @@ elif step == "2️⃣ 编辑分单":
     st.header("2️⃣ 编辑分单")
 
     if st.session_state.df_splits is None:
-        st.warning("⚠️ 请先上传并导入数据")
+        st.warning("⚠️ 请先上传数据")
         st.stop()
 
-    # ========== 批量设置区域 ==========
-    st.markdown("### 🔧 批量设置")
-    st.caption("选择要批量修改的行，然后设置统一的分佣人和比例")
+    # 批量编辑工具栏
+    st.markdown("### 🔧 批量编辑工具")
+    st.caption("先在表格中勾选要修改的行，然后设置分佣信息并点击应用")
 
-    # 获取所有唯一的分佣人
-    existing_persons = set()
-    for _, row in st.session_state.df_splits.iterrows():
-        if row.get('Person1'):
-            existing_persons.add(str(row['Person1']))
-        if row.get('Person2'):
-            existing_persons.add(str(row['Person2']))
-    existing_persons = sorted([p for p in existing_persons if p])
+    tool_cols = st.columns([1, 1, 1, 1, 1, 1, 2])
+    with tool_cols[0]:
+        batch_person1 = st.text_input("分佣人1", key="bp1", placeholder="姓名")
+    with tool_cols[1]:
+        batch_rate1 = st.number_input("比例1", value=0.55, min_value=0.0, max_value=1.0, step=0.01, key="br1")
+    with tool_cols[2]:
+        batch_split1 = st.number_input("分成1", value=1.0, min_value=0.0, max_value=1.0, step=0.1, key="bs1")
+    with tool_cols[3]:
+        batch_person2 = st.text_input("分佣人2", key="bp2", placeholder="可选")
+    with tool_cols[4]:
+        batch_rate2 = st.number_input("比例2", value=0.55, min_value=0.0, max_value=1.0, step=0.01, key="br2")
+    with tool_cols[5]:
+        batch_split2 = st.number_input("分成2", value=0.0, min_value=0.0, max_value=1.0, step=0.1, key="bs2")
 
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.markdown("**选择要修改的行**")
-        # 行选择
-        all_policies = st.session_state.df_splits['Policy'].tolist()
-        select_all = st.checkbox("全选", value=False)
-        if select_all:
-            selected_rows = st.multiselect(
-                "选择保单",
-                options=all_policies,
-                default=all_policies,
-                label_visibility="collapsed"
-            )
-        else:
-            selected_rows = st.multiselect(
-                "选择保单",
-                options=all_policies,
-                default=[],
-                label_visibility="collapsed"
-            )
-
-    with col2:
-        st.markdown("**设置分佣信息**")
-
-        # 分佣人1
-        batch_person1 = st.text_input("分佣人1", placeholder="输入姓名")
-        bcol1, bcol2 = st.columns(2)
-        with bcol1:
-            batch_rate1 = st.number_input("比例1", min_value=0.0, max_value=1.0, value=0.55, step=0.01)
-        with bcol2:
-            batch_split1 = st.number_input("分成1", min_value=0.0, max_value=1.0, value=1.0, step=0.1)
-
-        # 分佣人2
-        batch_person2 = st.text_input("分佣人2 (可选)", placeholder="留空则不分")
-        bcol3, bcol4 = st.columns(2)
-        with bcol3:
-            batch_rate2 = st.number_input("比例2", min_value=0.0, max_value=1.0, value=0.55, step=0.01)
-        with bcol4:
-            batch_split2 = st.number_input("分成2", min_value=0.0, max_value=1.0, value=0.0, step=0.1)
-
-    # 验证分成总和
+    # 验证和应用按钮
     total_split = batch_split1 + batch_split2
-    if abs(total_split - 1.0) > 0.001:
-        st.error(f"⚠️ 分成总和必须等于1.0，当前为 {total_split:.2f}")
-        can_apply = False
-    else:
-        st.success(f"✅ 分成总和 = {total_split:.2f}")
-        can_apply = True
+    with tool_cols[6]:
+        if abs(total_split - 1.0) > 0.001:
+            st.error(f"分成={total_split:.1f}≠1")
+            apply_disabled = True
+        else:
+            st.success(f"分成={total_split:.1f}✓")
+            apply_disabled = False
 
-    # 应用批量修改
-    if st.button("📝 应用批量修改", type="primary", disabled=not can_apply or len(selected_rows) == 0):
-        df = st.session_state.df_splits.copy()
-        for idx, row in df.iterrows():
-            if row['Policy'] in selected_rows:
-                if batch_person1:
-                    df.at[idx, 'Person1'] = batch_person1
-                df.at[idx, 'Rate1'] = batch_rate1
-                df.at[idx, 'Split1'] = batch_split1
-                df.at[idx, 'Person2'] = batch_person2
-                df.at[idx, 'Rate2'] = batch_rate2
-                df.at[idx, 'Split2'] = batch_split2
-        st.session_state.df_splits = df
-        st.success(f"✅ 已批量修改 {len(selected_rows)} 条记录")
-        st.rerun()
+        if st.button("📝 应用到选中行", disabled=apply_disabled, type="primary", use_container_width=True):
+            df = st.session_state.df_splits.copy()
+            count = 0
+            for idx, row in df.iterrows():
+                if row.get('选择', False):
+                    if batch_person1:
+                        df.at[idx, 'Person1'] = batch_person1
+                    df.at[idx, 'Rate1'] = batch_rate1
+                    df.at[idx, 'Split1'] = batch_split1
+                    df.at[idx, 'Person2'] = batch_person2
+                    df.at[idx, 'Rate2'] = batch_rate2
+                    df.at[idx, 'Split2'] = batch_split2
+                    df.at[idx, '选择'] = False  # 取消选择
+                    count += 1
+            if count > 0:
+                st.session_state.df_splits = df
+                st.success(f"✅ 已修改 {count} 条")
+                st.rerun()
+            else:
+                st.warning("⚠️ 请先勾选要修改的行")
+
+    # 快捷操作
+    qk_cols = st.columns(4)
+    with qk_cols[0]:
+        if st.button("☑️ 全选"):
+            st.session_state.df_splits['选择'] = True
+            st.rerun()
+    with qk_cols[1]:
+        if st.button("⬜ 取消全选"):
+            st.session_state.df_splits['选择'] = False
+            st.rerun()
+    with qk_cols[2]:
+        selected_count = st.session_state.df_splits['选择'].sum()
+        st.info(f"已选: {selected_count} 条")
 
     st.markdown("---")
 
-    # ========== 编辑表格区域 ==========
-    st.markdown("### 📝 逐条编辑")
-    st.caption("也可以直接在表格中编辑单条记录")
-
-    # 编辑表格
+    # 可编辑表格
     edited_df = st.data_editor(
         st.session_state.df_splits,
         use_container_width=True,
         num_rows="fixed",
         column_config={
-            'Policy': st.column_config.TextColumn('保单号', disabled=True),
-            'Insured': st.column_config.TextColumn('被保人', disabled=True),
-            'AAP': st.column_config.NumberColumn('AAP', disabled=True, format="$%.2f"),
-            'Modal': st.column_config.NumberColumn('Modal', disabled=True, format="$%.2f"),
-            'PayType': st.column_config.TextColumn('缴费类型', disabled=True),
-            'Premium': st.column_config.NumberColumn('计算保费', disabled=True, format="$%.2f"),
-            'CommRate': st.column_config.NumberColumn('佣金率', format="%.2f"),
-            'Person1': st.column_config.TextColumn('分佣人1'),
-            'Rate1': st.column_config.NumberColumn('比例1', format="%.2f"),
-            'Split1': st.column_config.NumberColumn('分成1', format="%.2f"),
-            'Person2': st.column_config.TextColumn('分佣人2'),
-            'Rate2': st.column_config.NumberColumn('比例2', format="%.2f"),
-            'Split2': st.column_config.NumberColumn('分成2', format="%.2f"),
-        }
+            '选择': st.column_config.CheckboxColumn('✓', default=False),
+            'Policy': st.column_config.TextColumn('保单号', disabled=True, width="small"),
+            'Insured': st.column_config.TextColumn('被保人', disabled=True, width="small"),
+            'AAP': st.column_config.NumberColumn('AAP', disabled=True, format="$%.0f", width="small"),
+            'Modal': st.column_config.NumberColumn('Modal', disabled=True, format="$%.0f", width="small"),
+            'PayType': st.column_config.TextColumn('类型', disabled=True, width="small"),
+            'Premium': st.column_config.NumberColumn('保费', disabled=True, format="$%.0f", width="small"),
+            'CommRate': st.column_config.NumberColumn('佣金率', format="%.2f", width="small"),
+            'Person1': st.column_config.TextColumn('分佣人1', width="medium"),
+            'Rate1': st.column_config.NumberColumn('比例1', format="%.2f", width="small"),
+            'Split1': st.column_config.NumberColumn('分成1', format="%.1f", width="small"),
+            'Person2': st.column_config.TextColumn('分佣人2', width="medium"),
+            'Rate2': st.column_config.NumberColumn('比例2', format="%.2f", width="small"),
+            'Split2': st.column_config.NumberColumn('分成2', format="%.1f", width="small"),
+        },
+        column_order=['选择', 'Policy', 'Insured', 'Premium', 'PayType', 'Person1', 'Rate1', 'Split1', 'Person2', 'Rate2', 'Split2'],
+        hide_index=True,
     )
 
-    # ========== 验证和保存 ==========
+    # 实时更新选择状态
+    st.session_state.df_splits = edited_df
+
     st.markdown("---")
 
-    # 验证所有行的分成总和
+    # 验证并保存
     errors = []
     for idx, row in edited_df.iterrows():
         split_sum = safe_float(row.get('Split1', 0)) + safe_float(row.get('Split2', 0))
         if abs(split_sum - 1.0) > 0.001:
-            errors.append(f"行 {idx}: 保单 {row['Policy']} 分成总和为 {split_sum:.2f}，应为 1.0")
+            errors.append(f"保单 {row['Policy']}: 分成={split_sum:.1f}")
 
     if errors:
-        st.error("❌ 以下行的分成比例不正确：")
-        for err in errors[:10]:  # 最多显示10条
-            st.warning(err)
-        if len(errors) > 10:
-            st.warning(f"...还有 {len(errors) - 10} 条错误")
-        save_disabled = True
+        st.error(f"❌ {len(errors)} 条记录分成比例错误（应为1.0）:")
+        st.warning("、".join(errors[:5]) + ("..." if len(errors) > 5 else ""))
     else:
-        st.success("✅ 所有行的分成比例验证通过")
-        save_disabled = False
+        st.success("✅ 所有记录验证通过")
 
-    if st.button("💾 保存修改", type="primary", disabled=save_disabled):
+    if st.button("💾 保存修改", type="primary", disabled=len(errors) > 0):
         st.session_state.df_splits = edited_df
         st.success("✅ 已保存")
 
@@ -404,6 +351,17 @@ elif step == "3️⃣ 计算佣金":
         st.warning("⚠️ 请先完成前面的步骤")
         st.stop()
 
+    # 先验证
+    errors = []
+    for idx, row in st.session_state.df_splits.iterrows():
+        split_sum = safe_float(row.get('Split1', 0)) + safe_float(row.get('Split2', 0))
+        if abs(split_sum - 1.0) > 0.001:
+            errors.append(row['Policy'])
+
+    if errors:
+        st.error(f"❌ 有 {len(errors)} 条记录分成比例错误，请先修正")
+        st.stop()
+
     if st.button("🧮 开始计算", type="primary"):
         results = []
         df = st.session_state.df_splits
@@ -413,12 +371,10 @@ elif step == "3️⃣ 计算佣金":
             premium = safe_float(row['Premium'])
             comm_rate = safe_float(row.get('CommRate', 0.80))
 
-            # 计算总佣金
             gross = premium * comm_rate
             override = premium * 0.48
             total_comm = premium * (comm_rate + 0.48)
 
-            # 分佣计算: 个人佣金 = Premium × Rate × Split
             for i in [1, 2]:
                 person = str(row.get(f'Person{i}', '')).strip()
                 rate = safe_float(row.get(f'Rate{i}', 0))
@@ -442,24 +398,19 @@ elif step == "3️⃣ 计算佣金":
         if results:
             st.session_state.df_results = pd.DataFrame(results)
             st.success(f"✅ 计算完成！{len(results)} 条记录")
-        else:
-            st.error("❌ 没有可计算的记录")
 
-    # 显示结果
     if st.session_state.df_results is not None:
         st.markdown("### 📊 计算结果")
         st.dataframe(st.session_state.df_results, use_container_width=True)
 
-        # 汇总
         st.markdown("### 📈 分人汇总")
         summary = st.session_state.df_results.groupby('Person').agg({
             'PersonComm': 'sum',
             'Policy': 'count'
-        }).rename(columns={'Policy': 'Count', 'PersonComm': 'TotalComm'})
-        summary['TotalComm'] = summary['TotalComm'].apply(lambda x: f"${x:,.2f}")
+        }).rename(columns={'Policy': '单数', 'PersonComm': '佣金总额'})
+        summary['佣金总额'] = summary['佣金总额'].apply(lambda x: f"${x:,.2f}")
         st.dataframe(summary, use_container_width=True)
 
-        # 导出
         st.markdown("### 📥 导出")
         output = BytesIO()
         st.session_state.df_results.to_excel(output, index=False, engine='openpyxl')
@@ -478,62 +429,40 @@ elif step == "4️⃣ 对账核验":
         st.warning("⚠️ 请先完成佣金计算")
         st.stop()
 
-    st.markdown("### 📤 上传对账文件")
-
     col1, col2 = st.columns(2)
-
     with col1:
         override_file = st.file_uploader("Override by Policy", type=['xlsx', 'xls'], key='override')
-
     with col2:
         gross_file = st.file_uploader("Payable Gross Commission", type=['xlsx', 'xls'], key='gross')
 
     if st.button("🔍 开始对账", type="primary"):
         results = st.session_state.df_results.copy()
 
-        # 处理Override文件
         if override_file:
             try:
                 df_ov = pd.read_excel(override_file, header=1, engine='openpyxl')
-                # 找到Policy和Amount列
-                policy_col = None
-                amount_col = None
-                for col in df_ov.columns:
-                    col_lower = str(col).lower()
-                    if 'policy' in col_lower:
-                        policy_col = col
-                    if 'amount' in col_lower or 'total' in col_lower:
-                        amount_col = col
-
+                policy_col = next((c for c in df_ov.columns if 'policy' in str(c).lower()), None)
+                amount_col = next((c for c in df_ov.columns if 'amount' in str(c).lower() or 'total' in str(c).lower()), None)
                 if policy_col and amount_col:
                     df_ov['Policy_Norm'] = df_ov[policy_col].apply(lambda x: normalize_policy(str(x)))
                     override_map = dict(zip(df_ov['Policy_Norm'], df_ov[amount_col].apply(safe_float)))
                     results['Override_Actual'] = results['Policy'].map(override_map)
-                    st.success(f"✅ Override文件: {len(override_map)} 条")
+                    st.success(f"✅ Override: {len(override_map)} 条")
             except Exception as e:
                 st.error(f"❌ Override解析失败: {e}")
 
-        # 处理Gross文件
         if gross_file:
             try:
                 df_gr = pd.read_excel(gross_file, header=4, engine='openpyxl')
-                policy_col = None
-                gross_col = None
-                for col in df_gr.columns:
-                    col_lower = str(col).lower()
-                    if 'policy' in col_lower:
-                        policy_col = col
-                    if 'gross' in col_lower or 'commission' in col_lower:
-                        gross_col = col
-
+                policy_col = next((c for c in df_gr.columns if 'policy' in str(c).lower()), None)
+                gross_col = next((c for c in df_gr.columns if 'gross' in str(c).lower()), None)
                 if policy_col and gross_col:
                     df_gr['Policy_Norm'] = df_gr[policy_col].apply(lambda x: normalize_policy(str(x)))
                     gross_map = dict(zip(df_gr['Policy_Norm'], df_gr[gross_col].apply(safe_float)))
                     results['Gross_Actual'] = results['Policy'].map(gross_map)
-                    st.success(f"✅ Gross文件: {len(gross_map)} 条")
+                    st.success(f"✅ Gross: {len(gross_map)} 条")
             except Exception as e:
                 st.error(f"❌ Gross解析失败: {e}")
 
-        # 显示对账结果
         st.markdown("### 📊 对账结果")
         st.dataframe(results, use_container_width=True)
