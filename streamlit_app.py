@@ -1,5 +1,6 @@
 """
-💰 佣金管理系统 v2.8
+💰 佣金管理系统 v2.9
+- 修复zhubiao解析：使用固定列位置(H,I,J,L,M,N)
 - 上传zhubiao自动匹配分单
 - 表格内选择+批量编辑
 - 数据保存/加载/删除
@@ -76,7 +77,7 @@ if 'current_dataset' not in st.session_state:
 # ==================== 侧边栏 ====================
 with st.sidebar:
     st.title("💰 佣金管理系统")
-    st.caption("v2.8")
+    st.caption("v2.9")
     st.markdown("---")
 
     step = st.radio("操作步骤", [
@@ -169,63 +170,70 @@ if step == "1️⃣ 上传数据":
                 template_map = {}
                 if template_file:
                     try:
-                        # 尝试读取分单模板
+                        # 读取分单模板（zhubiao格式）
+                        # 固定列位置：A=Policy, H=Person1, I=Rate1, J=Split1, L=Person2, M=Rate2, N=Split2
                         df_tpl = pd.read_excel(template_file, header=0, engine='openpyxl')
                         template_file.seek(0)
 
-                        # 查找关键列
-                        policy_col = next((c for c in df_tpl.columns if 'policy' in str(c).lower()), None)
-
-                        # 查找分佣人1相关列 (H,I,J 或 CFT相关 或 经纪人相关)
-                        person1_col = None
-                        rate1_col = None
-                        split1_col = None
-                        person2_col = None
-                        rate2_col = None
-                        split2_col = None
-
                         cols = list(df_tpl.columns)
-                        for i, col in enumerate(cols):
-                            col_str = str(col).lower()
-                            # 找CFT或第一个经纪人列
-                            if 'cft' in col_str or col_str == '经纪人':
-                                person1_col = col
-                                # 后面两列可能是比例和分佣
-                                if i + 1 < len(cols):
-                                    rate1_col = cols[i + 1]
-                                if i + 2 < len(cols):
-                                    split1_col = cols[i + 2]
-                            # 找第二个分佣人
-                            if i > 0 and person1_col and col_str in ['经纪人', '分佣人2', 'agent2']:
-                                person2_col = col
-                                if i + 1 < len(cols):
-                                    rate2_col = cols[i + 1]
-                                if i + 2 < len(cols):
-                                    split2_col = cols[i + 2]
+                        st.info(f"📋 模板列数: {len(cols)}")
 
-                        # 如果没找到，尝试按位置（H=7, I=8, J=9, L=11, M=12, N=13）
-                        if not person1_col and len(cols) > 9:
-                            person1_col = cols[7] if len(cols) > 7 else None  # H列
-                            rate1_col = cols[8] if len(cols) > 8 else None    # I列
-                            split1_col = cols[9] if len(cols) > 9 else None   # J列
-                            person2_col = cols[11] if len(cols) > 11 else None # L列
-                            rate2_col = cols[12] if len(cols) > 12 else None   # M列
-                            split2_col = cols[13] if len(cols) > 13 else None  # N列
+                        # zhubiao固定结构：
+                        # A(0)=Policy, H(7)=Person1, I(8)=Rate1, J(9)=Split1
+                        # L(11)=Person2, M(12)=Rate2, N(13)=Split2
+                        if len(cols) >= 14:
+                            policy_col = cols[0]   # A列
+                            person1_col = cols[7]  # H列
+                            rate1_col = cols[8]    # I列
+                            split1_col = cols[9]   # J列
+                            person2_col = cols[11] # L列
+                            rate2_col = cols[12]   # M列
+                            split2_col = cols[13]  # N列
 
-                        if policy_col and person1_col:
-                            for _, row in df_tpl.iterrows():
-                                policy_val = str(row.get(policy_col, ''))
+                            # 显示识别的列名用于调试
+                            st.info(f"📊 列映射: Policy={policy_col}, Person1={person1_col}, Person2={person2_col}")
+
+                            for idx, row in df_tpl.iterrows():
+                                policy_val = str(row.iloc[0]) if pd.notna(row.iloc[0]) else ''
                                 policy_norm = normalize_policy(policy_val)
-                                if policy_norm:
-                                    template_map[policy_norm] = {
-                                        'Person1': str(row.get(person1_col, '')) if pd.notna(row.get(person1_col, '')) else '',
-                                        'Rate1': safe_float(row.get(rate1_col, 0.55)),
-                                        'Split1': safe_float(row.get(split1_col, 1.0)),
-                                        'Person2': str(row.get(person2_col, '')) if pd.notna(row.get(person2_col, '')) else '',
-                                        'Rate2': safe_float(row.get(rate2_col, 0.55)),
-                                        'Split2': safe_float(row.get(split2_col, 0)),
-                                    }
-                            st.success(f"✅ 模板匹配: {len(template_map)} 条分单规则")
+
+                                # 跳过空行或表头行
+                                if not policy_norm or not any(c.isdigit() for c in policy_norm):
+                                    continue
+
+                                # 使用iloc按位置读取，更可靠
+                                person1 = str(row.iloc[7]) if pd.notna(row.iloc[7]) else ''
+                                rate1 = safe_float(row.iloc[8], 0.55)
+                                split1 = safe_float(row.iloc[9], 1.0)
+                                person2 = str(row.iloc[11]) if len(row) > 11 and pd.notna(row.iloc[11]) else ''
+                                rate2 = safe_float(row.iloc[12], 0.55) if len(row) > 12 else 0.55
+                                split2 = safe_float(row.iloc[13], 0) if len(row) > 13 else 0
+
+                                # 清理person名字中的nan
+                                if person1.lower() == 'nan':
+                                    person1 = ''
+                                if person2.lower() == 'nan':
+                                    person2 = ''
+
+                                template_map[policy_norm] = {
+                                    'Person1': person1,
+                                    'Rate1': rate1,
+                                    'Split1': split1,
+                                    'Person2': person2,
+                                    'Rate2': rate2,
+                                    'Split2': split2,
+                                }
+
+                            st.success(f"✅ 模板解析: {len(template_map)} 条分单规则")
+
+                            # 显示前3条用于验证
+                            if template_map:
+                                st.markdown("**前3条匹配预览:**")
+                                preview_items = list(template_map.items())[:3]
+                                for p, v in preview_items:
+                                    st.caption(f"  {p}: {v['Person1']}({v['Rate1']:.0%}×{v['Split1']:.0%}) + {v['Person2']}({v['Rate2']:.0%}×{v['Split2']:.0%})")
+                        else:
+                            st.warning(f"⚠️ 模板列数不足({len(cols)}列)，需要至少14列")
                     except Exception as e:
                         st.warning(f"⚠️ 模板解析失败: {e}，将使用默认分单")
 
