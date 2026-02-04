@@ -119,11 +119,11 @@ with st.expander("📤 Upload NLG Report", expanded=st.session_state.data is Non
                         'CommRate': comm_rate,
                         'Agent': agent,
                         'Person1': recruiter if recruiter else agent,  # 优先用Recruiter
-                        'Rate1': 0.55,
-                        'Split1': 1.0,
+                        'Rate1': 55,      # 百分比格式
+                        'Split1': 100,    # 百分比格式
                         'Person2': '',
-                        'Rate2': 0.55,
-                        'Split2': 0.0,
+                        'Rate2': 55,      # 百分比格式
+                        'Split2': 0,      # 百分比格式
                     })
 
                 st.session_state.data = pd.DataFrame(rows)
@@ -134,9 +134,9 @@ with st.expander("📤 Upload NLG Report", expanded=st.session_state.data is Non
 if st.session_state.data is not None:
     df = st.session_state.data.copy()
 
-    # 计算每行的佣金
-    df['Comm1'] = df['Premium'] * df['Rate1'] * df['Split1']
-    df['Comm2'] = df['Premium'] * df['Rate2'] * df['Split2']
+    # 计算每行的佣金 (Rate和Split都是百分比，需要除以100)
+    df['Comm1'] = df['Premium'] * (df['Rate1']/100) * (df['Split1']/100)
+    df['Comm2'] = df['Premium'] * (df['Rate2']/100) * (df['Split2']/100)
     df['TotalSplit'] = df['Split1'] + df['Split2']
 
     # ==================== 汇总区域 ====================
@@ -183,25 +183,25 @@ if st.session_state.data is not None:
     bcol1, bcol2, bcol3, bcol4, bcol5, bcol6, bcol7 = st.columns([2, 1, 1, 2, 1, 1, 2])
 
     with bcol1:
-        batch_p1 = st.text_input("Recruiter 1", key="bp1")
+        batch_p1 = st.text_input("Recruiter", key="bp1")
     with bcol2:
-        batch_r1 = st.number_input("Rate 1", 0.0, 1.0, 0.55, 0.01, key="br1")
+        batch_r1 = st.number_input("佣金比例%", 0, 100, 55, 1, key="br1")
     with bcol3:
-        batch_s1 = st.number_input("Split 1", 0.0, 1.0, 1.0, 0.1, key="bs1")
+        batch_s1 = st.number_input("分佣比例%", 0, 100, 100, 10, key="bs1")
     with bcol4:
-        batch_p2 = st.text_input("Recruiter 2", key="bp2")
+        batch_p2 = st.text_input("CFT", key="bp2")
     with bcol5:
-        batch_r2 = st.number_input("Rate 2", 0.0, 1.0, 0.55, 0.01, key="br2")
+        batch_r2 = st.number_input("CFT比例%", 0, 100, 55, 1, key="br2")
     with bcol6:
-        batch_s2 = st.number_input("Split 2", 0.0, 1.0, 0.0, 0.1, key="bs2")
+        batch_s2 = st.number_input("CFT分佣%", 0, 100, 0, 10, key="bs2")
 
     with bcol7:
         total_split = batch_s1 + batch_s2
-        if abs(total_split - 1.0) < 0.01:
-            st.success(f"✓ Split={total_split:.1f}")
+        if total_split == 100:
+            st.success(f"✓ 分佣={total_split}%")
             can_apply = True
         else:
-            st.error(f"✗ Split={total_split:.1f}≠1")
+            st.error(f"✗ 分佣={total_split}%≠100%")
             can_apply = False
 
         if st.button("📝 Apply", disabled=not can_apply, type="primary"):
@@ -245,9 +245,9 @@ if st.session_state.data is not None:
     # 显示表格
     display_df = st.session_state.data[['_selected', 'Policy', 'Insured', 'Premium', 'Person1', 'Rate1', 'Split1', 'Person2', 'Rate2', 'Split2']].copy()
 
-    # 计算佣金用于显示
-    display_df['Comm1'] = st.session_state.data['Premium'] * st.session_state.data['Rate1'] * st.session_state.data['Split1']
-    display_df['Comm2'] = st.session_state.data['Premium'] * st.session_state.data['Rate2'] * st.session_state.data['Split2']
+    # 计算佣金用于显示 (百分比需要除以100)
+    display_df['Comm1'] = st.session_state.data['Premium'] * (st.session_state.data['Rate1']/100) * (st.session_state.data['Split1']/100)
+    display_df['Comm2'] = st.session_state.data['Premium'] * (st.session_state.data['Rate2']/100) * (st.session_state.data['Split2']/100)
 
     edited = st.data_editor(
         display_df,
@@ -257,15 +257,15 @@ if st.session_state.data is not None:
             '_selected': st.column_config.CheckboxColumn('✓', default=False, width='small'),
             'Policy': st.column_config.TextColumn('Policy', disabled=True, width='small'),
             'Insured': st.column_config.TextColumn('Insured', disabled=True, width='small'),
-            'Premium': st.column_config.NumberColumn('Premium', disabled=True, format='$%.0f', width='small'),
-            'Person1': st.column_config.TextColumn('Recruiter 1', width='medium'),
-            'Rate1': st.column_config.NumberColumn('Rate 1', format='%.2f', width='small'),
-            'Split1': st.column_config.NumberColumn('Split 1', format='%.1f', width='small'),
-            'Comm1': st.column_config.NumberColumn('Comm 1', disabled=True, format='$%.2f', width='small'),
-            'Person2': st.column_config.TextColumn('Recruiter 2', width='medium'),
-            'Rate2': st.column_config.NumberColumn('Rate 2', format='%.2f', width='small'),
-            'Split2': st.column_config.NumberColumn('Split 2', format='%.1f', width='small'),
-            'Comm2': st.column_config.NumberColumn('Comm 2', disabled=True, format='$%.2f', width='small'),
+            'Premium': st.column_config.NumberColumn('Gross Comm Earned', disabled=True, format='$%.2f', width='small'),
+            'Person1': st.column_config.TextColumn('Recruiter', width='medium'),
+            'Rate1': st.column_config.NumberColumn('Recruiter佣金比例', format='%.0f%%', width='small'),
+            'Split1': st.column_config.NumberColumn('Recruiter分佣比例', format='%.0f%%', width='small'),
+            'Comm1': st.column_config.NumberColumn('Recruiter佣金', disabled=True, format='$%.2f', width='small'),
+            'Person2': st.column_config.TextColumn('CFT', width='medium'),
+            'Rate2': st.column_config.NumberColumn('CFT比例', format='%.0f%%', width='small'),
+            'Split2': st.column_config.NumberColumn('CFT分佣比例', format='%.0f%%', width='small'),
+            'Comm2': st.column_config.NumberColumn('CFT佣金', disabled=True, format='$%.2f', width='small'),
         },
         column_order=['_selected', 'Policy', 'Insured', 'Premium', 'Person1', 'Rate1', 'Split1', 'Comm1', 'Person2', 'Rate2', 'Split2', 'Comm2'],
     )
@@ -286,8 +286,8 @@ if st.session_state.data is not None:
     errors = []
     for idx, row in st.session_state.data.iterrows():
         split_sum = row['Split1'] + row['Split2']
-        if abs(split_sum - 1.0) > 0.01:
-            errors.append(f"{row['Policy']}: Split={split_sum:.1f}")
+        if split_sum != 100:
+            errors.append(f"{row['Policy']}: 分佣={split_sum}%")
 
     if errors:
         st.error(f"❌ {len(errors)} split errors: " + ", ".join(errors[:5]))
@@ -300,9 +300,21 @@ if st.session_state.data is not None:
             # 导出明细
             output = BytesIO()
             export_df = st.session_state.data.copy()
-            export_df['Comm1'] = export_df['Premium'] * export_df['Rate1'] * export_df['Split1']
-            export_df['Comm2'] = export_df['Premium'] * export_df['Rate2'] * export_df['Split2']
-            export_df = export_df[['Policy', 'Insured', 'Premium', 'Person1', 'Rate1', 'Split1', 'Comm1', 'Person2', 'Rate2', 'Split2', 'Comm2']]
+            export_df['Comm1'] = export_df['Premium'] * (export_df['Rate1']/100) * (export_df['Split1']/100)
+            export_df['Comm2'] = export_df['Premium'] * (export_df['Rate2']/100) * (export_df['Split2']/100)
+            # 重命名列名匹配zhubiao格式
+            export_df = export_df.rename(columns={
+                'Premium': 'Gross Comm Earned',
+                'Person1': 'Recruiter',
+                'Rate1': 'Recruiter佣金比例',
+                'Split1': 'Recruiter分佣比例',
+                'Comm1': 'Recruiter佣金',
+                'Person2': 'CFT',
+                'Rate2': 'CFT比例',
+                'Split2': 'CFT分佣比例',
+                'Comm2': 'CFT佣金'
+            })
+            export_df = export_df[['Policy', 'Insured', 'Gross Comm Earned', 'Recruiter', 'Recruiter佣金比例', 'Recruiter分佣比例', 'Recruiter佣金', 'CFT', 'CFT比例', 'CFT分佣比例', 'CFT佣金']]
             export_df.to_excel(output, index=False, engine='openpyxl')
             st.download_button("📥 Download Detail", output.getvalue(), f"commission_detail_{datetime.now().strftime('%Y%m%d')}.xlsx")
 
