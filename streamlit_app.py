@@ -1,5 +1,6 @@
 """
-💰 佣金管理系统 v2.7
+💰 佣金管理系统 v2.8
+- 上传zhubiao自动匹配分单
 - 表格内选择+批量编辑
 - 数据保存/加载/删除
 """
@@ -75,7 +76,7 @@ if 'current_dataset' not in st.session_state:
 # ==================== 侧边栏 ====================
 with st.sidebar:
     st.title("💰 佣金管理系统")
-    st.caption("v2.7")
+    st.caption("v2.8")
     st.markdown("---")
 
     step = st.radio("操作步骤", [
@@ -116,11 +117,18 @@ with st.sidebar:
 if step == "1️⃣ 上传数据":
     st.header("1️⃣ 上传数据")
 
-    uploaded_file = st.file_uploader("上传 NLG New Business Report", type=['xlsx', 'xls'])
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("#### 📄 NLG New Business Report")
+        uploaded_file = st.file_uploader("必填：NLG报表", type=['xlsx', 'xls'], key="nlg")
+    with col2:
+        st.markdown("#### 📋 分单模板 (可选)")
+        template_file = st.file_uploader("可选：已有分单表(zhubiao)", type=['xlsx', 'xls'], key="template")
 
     if uploaded_file and st.button("📥 导入数据", type="primary"):
         with st.spinner("导入中..."):
             try:
+                # 解析NLG文件
                 df, header_row, error = parse_nlg_file(uploaded_file)
                 if error:
                     st.error(f"❌ {error}")
@@ -157,8 +165,73 @@ if step == "1️⃣ 上传数据":
 
                 st.session_state.df_raw = df
 
-                # 生成分单表（带选择列）
+                # 解析分单模板 (如果有)
+                template_map = {}
+                if template_file:
+                    try:
+                        # 尝试读取分单模板
+                        df_tpl = pd.read_excel(template_file, header=0, engine='openpyxl')
+                        template_file.seek(0)
+
+                        # 查找关键列
+                        policy_col = next((c for c in df_tpl.columns if 'policy' in str(c).lower()), None)
+
+                        # 查找分佣人1相关列 (H,I,J 或 CFT相关 或 经纪人相关)
+                        person1_col = None
+                        rate1_col = None
+                        split1_col = None
+                        person2_col = None
+                        rate2_col = None
+                        split2_col = None
+
+                        cols = list(df_tpl.columns)
+                        for i, col in enumerate(cols):
+                            col_str = str(col).lower()
+                            # 找CFT或第一个经纪人列
+                            if 'cft' in col_str or col_str == '经纪人':
+                                person1_col = col
+                                # 后面两列可能是比例和分佣
+                                if i + 1 < len(cols):
+                                    rate1_col = cols[i + 1]
+                                if i + 2 < len(cols):
+                                    split1_col = cols[i + 2]
+                            # 找第二个分佣人
+                            if i > 0 and person1_col and col_str in ['经纪人', '分佣人2', 'agent2']:
+                                person2_col = col
+                                if i + 1 < len(cols):
+                                    rate2_col = cols[i + 1]
+                                if i + 2 < len(cols):
+                                    split2_col = cols[i + 2]
+
+                        # 如果没找到，尝试按位置（H=7, I=8, J=9, L=11, M=12, N=13）
+                        if not person1_col and len(cols) > 9:
+                            person1_col = cols[7] if len(cols) > 7 else None  # H列
+                            rate1_col = cols[8] if len(cols) > 8 else None    # I列
+                            split1_col = cols[9] if len(cols) > 9 else None   # J列
+                            person2_col = cols[11] if len(cols) > 11 else None # L列
+                            rate2_col = cols[12] if len(cols) > 12 else None   # M列
+                            split2_col = cols[13] if len(cols) > 13 else None  # N列
+
+                        if policy_col and person1_col:
+                            for _, row in df_tpl.iterrows():
+                                policy_val = str(row.get(policy_col, ''))
+                                policy_norm = normalize_policy(policy_val)
+                                if policy_norm:
+                                    template_map[policy_norm] = {
+                                        'Person1': str(row.get(person1_col, '')) if pd.notna(row.get(person1_col, '')) else '',
+                                        'Rate1': safe_float(row.get(rate1_col, 0.55)),
+                                        'Split1': safe_float(row.get(split1_col, 1.0)),
+                                        'Person2': str(row.get(person2_col, '')) if pd.notna(row.get(person2_col, '')) else '',
+                                        'Rate2': safe_float(row.get(rate2_col, 0.55)),
+                                        'Split2': safe_float(row.get(split2_col, 0)),
+                                    }
+                            st.success(f"✅ 模板匹配: {len(template_map)} 条分单规则")
+                    except Exception as e:
+                        st.warning(f"⚠️ 模板解析失败: {e}，将使用默认分单")
+
+                # 生成分单表
                 splits_data = []
+                matched_count = 0
                 for _, row in df.iterrows():
                     modal = safe_float(row.get('Modal', 0))
                     aap = safe_float(row.get('AAP', 0))
@@ -173,27 +246,54 @@ if step == "1️⃣ 上传数据":
                     comm_rate = 0.67 if 'term' in product else 0.80
                     recruiter = str(row.get('Recruiter', '')) if pd.notna(row.get('Recruiter', '')) else ''
 
-                    splits_data.append({
-                        '选择': False,  # 选择列
-                        'Policy': row['Policy_Norm'],
-                        'Insured': str(row.get('Insured', '')) if pd.notna(row.get('Insured', '')) else '',
-                        'AAP': aap,
-                        'Modal': modal,
-                        'PayType': pay_type,
-                        'Premium': premium,
-                        'CommRate': comm_rate,
-                        'Person1': recruiter,
-                        'Rate1': 0.55,
-                        'Split1': 1.0,
-                        'Person2': '',
-                        'Rate2': 0.55,
-                        'Split2': 0.0,
-                    })
+                    policy_norm = row['Policy_Norm']
+
+                    # 检查是否有模板匹配
+                    if policy_norm in template_map:
+                        tpl = template_map[policy_norm]
+                        matched_count += 1
+                        splits_data.append({
+                            '选择': False,
+                            'Policy': policy_norm,
+                            'Insured': str(row.get('Insured', '')) if pd.notna(row.get('Insured', '')) else '',
+                            'AAP': aap,
+                            'Modal': modal,
+                            'PayType': pay_type,
+                            'Premium': premium,
+                            'CommRate': comm_rate,
+                            'Person1': tpl['Person1'],
+                            'Rate1': tpl['Rate1'],
+                            'Split1': tpl['Split1'],
+                            'Person2': tpl['Person2'],
+                            'Rate2': tpl['Rate2'],
+                            'Split2': tpl['Split2'],
+                        })
+                    else:
+                        splits_data.append({
+                            '选择': False,
+                            'Policy': policy_norm,
+                            'Insured': str(row.get('Insured', '')) if pd.notna(row.get('Insured', '')) else '',
+                            'AAP': aap,
+                            'Modal': modal,
+                            'PayType': pay_type,
+                            'Premium': premium,
+                            'CommRate': comm_rate,
+                            'Person1': recruiter,
+                            'Rate1': 0.55,
+                            'Split1': 1.0,
+                            'Person2': '',
+                            'Rate2': 0.55,
+                            'Split2': 0.0,
+                        })
 
                 st.session_state.df_splits = pd.DataFrame(splits_data)
                 st.session_state.df_results = None
                 st.session_state.current_dataset = None
-                st.success(f"✅ 导入成功！{len(df)} 条记录")
+
+                if matched_count > 0:
+                    st.success(f"✅ 导入成功！{len(df)} 条记录，其中 {matched_count} 条已自动匹配分单")
+                else:
+                    st.success(f"✅ 导入成功！{len(df)} 条记录")
 
             except Exception as e:
                 st.error(f"❌ 导入失败: {e}")
