@@ -317,14 +317,9 @@ if st.session_state.data is not None:
 
     with bcol7:
         total_split = batch_s1 + batch_s2
-        if total_split == 100:
-            st.success(f"✓ 分佣={total_split}%")
-            can_apply = True
-        else:
-            st.error(f"✗ 分佣={total_split}%≠100%")
-            can_apply = False
+        st.info(f"分佣合计: {total_split}%")
 
-        if st.button("📝 Apply", disabled=not can_apply, type="primary"):
+        if st.button("📝 Apply", type="primary"):
             mask = st.session_state.data['_selected'] == True
             if mask.sum() > 0:
                 if batch_p1:
@@ -423,51 +418,39 @@ if st.session_state.data is not None:
     st.session_state.data['Rate2'] = edited['Rate2']
     st.session_state.data['Split2'] = edited['Split2']
 
-    # ==================== 校验和导出 ====================
+    # ==================== 导出 ====================
     st.markdown("---")
 
-    # 校验
-    errors = []
-    for idx, row in st.session_state.data.iterrows():
-        split_sum = row['Split1'] + row['Split2']
-        if split_sum != 100:
-            errors.append(f"{row['Policy']}: 分佣={split_sum}%")
+    # 导出按钮（不再强制校验Split1+Split2=100%）
+    col1, col2 = st.columns(2)
+    with col1:
+        # 导出明细
+        output = BytesIO()
+        export_df = st.session_state.data.copy()
+        export_df['Comm1'] = export_df['Premium'] * (export_df['Rate1']/100) * (export_df['Split1']/100)
+        export_df['Comm2'] = export_df['Premium'] * (export_df['Rate2']/100) * (export_df['Split2']/100)
+        # 重命名列名匹配zhubiao格式
+        export_df = export_df.rename(columns={
+            'MatchStatus': 'Match Status',
+            'CommRate': 'Comm Rate %',
+            'Premium': 'Gross Comm Earned',
+            'Person1': 'Recruiter',
+            'Rate1': 'Recruiter佣金比例',
+            'Split1': 'Recruiter分佣比例',
+            'Comm1': 'Recruiter佣金',
+            'Person2': 'CFT',
+            'Rate2': 'CFT比例',
+            'Split2': 'CFT分佣比例',
+            'Comm2': 'CFT佣金'
+        })
+        export_cols = ['Policy', 'Insured', 'Match Status', 'Comm Rate %', 'Gross Comm Earned', 'Recruiter', 'Recruiter佣金比例', 'Recruiter分佣比例', 'Recruiter佣金', 'CFT', 'CFT比例', 'CFT分佣比例', 'CFT佣金']
+        export_df = export_df[[c for c in export_cols if c in export_df.columns]]
+        export_df.to_excel(output, index=False, engine='openpyxl')
+        st.download_button("📥 Download Detail", output.getvalue(), f"commission_detail_{datetime.now().strftime('%Y%m%d')}.xlsx")
 
-    if errors:
-        st.error(f"❌ {len(errors)} split errors: " + ", ".join(errors[:5]))
-    else:
-        st.success("✅ All records validated")
-
-        # 导出
-        col1, col2 = st.columns(2)
-        with col1:
-            # 导出明细
-            output = BytesIO()
-            export_df = st.session_state.data.copy()
-            export_df['Comm1'] = export_df['Premium'] * (export_df['Rate1']/100) * (export_df['Split1']/100)
-            export_df['Comm2'] = export_df['Premium'] * (export_df['Rate2']/100) * (export_df['Split2']/100)
-            # 重命名列名匹配zhubiao格式
-            export_df = export_df.rename(columns={
-                'MatchStatus': 'Match Status',
-                'CommRate': 'Comm Rate %',
-                'Premium': 'Gross Comm Earned',
-                'Person1': 'Recruiter',
-                'Rate1': 'Recruiter佣金比例',
-                'Split1': 'Recruiter分佣比例',
-                'Comm1': 'Recruiter佣金',
-                'Person2': 'CFT',
-                'Rate2': 'CFT比例',
-                'Split2': 'CFT分佣比例',
-                'Comm2': 'CFT佣金'
-            })
-            export_cols = ['Policy', 'Insured', 'Match Status', 'Comm Rate %', 'Gross Comm Earned', 'Recruiter', 'Recruiter佣金比例', 'Recruiter分佣比例', 'Recruiter佣金', 'CFT', 'CFT比例', 'CFT分佣比例', 'CFT佣金']
-            export_df = export_df[[c for c in export_cols if c in export_df.columns]]
-            export_df.to_excel(output, index=False, engine='openpyxl')
-            st.download_button("📥 Download Detail", output.getvalue(), f"commission_detail_{datetime.now().strftime('%Y%m%d')}.xlsx")
-
-        with col2:
-            # 导出汇总
-            if summary_data:
-                output2 = BytesIO()
-                pd.DataFrame(summary_data).to_excel(output2, index=False, engine='openpyxl')
-                st.download_button("📥 Download Summary", output2.getvalue(), f"commission_summary_{datetime.now().strftime('%Y%m%d')}.xlsx")
+    with col2:
+        # 导出汇总
+        if summary_data:
+            output2 = BytesIO()
+            pd.DataFrame(summary_data).to_excel(output2, index=False, engine='openpyxl')
+            st.download_button("📥 Download Summary", output2.getvalue(), f"commission_summary_{datetime.now().strftime('%Y%m%d')}.xlsx")
