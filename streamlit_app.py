@@ -53,7 +53,7 @@ def parse_nlg_file(uploaded_file):
         except:
             uploaded_file.seek(0)
             continue
-    return None, "无法解析文件"
+    return None, "Unable to parse file"
 
 # Session State
 if 'data' not in st.session_state:
@@ -63,10 +63,10 @@ if 'data' not in st.session_state:
 st.title("💰 佣金管理系统 v3.0")
 
 # ==================== 上传区域 ====================
-with st.expander("📤 上传NLG报表", expanded=st.session_state.data is None):
-    uploaded_file = st.file_uploader("选择Excel文件", type=['xlsx', 'xls'])
+with st.expander("📤 Upload NLG Report", expanded=st.session_state.data is None):
+    uploaded_file = st.file_uploader("Select Excel file", type=['xlsx', 'xls'])
 
-    if uploaded_file and st.button("📥 导入", type="primary"):
+    if uploaded_file and st.button("📥 Import", type="primary"):
         df, error = parse_nlg_file(uploaded_file)
         if error:
             st.error(f"❌ {error}")
@@ -81,6 +81,8 @@ with st.expander("📤 上传NLG报表", expanded=st.session_state.data is None)
                     col_map[col] = 'Insured'
                 elif col_lower == 'agent':
                     col_map[col] = 'Agent'
+                elif 'recruiter' in col_lower:
+                    col_map[col] = 'Recruiter'
                 elif 'modal' in col_lower:
                     col_map[col] = 'Modal'
                 elif 'aap' in col_lower:
@@ -97,7 +99,7 @@ with st.expander("📤 上传NLG报表", expanded=st.session_state.data is None)
             df = df[(df['AAP'] > 0) | (df['Modal'] > 0)].reset_index(drop=True)
 
             if len(df) == 0:
-                st.error("❌ 没有有效数据")
+                st.error("❌ No valid data")
             else:
                 # 构建工作数据
                 rows = []
@@ -108,6 +110,7 @@ with st.expander("📤 上传NLG报表", expanded=st.session_state.data is None)
                     product = str(row.get('Product', '')).lower()
                     comm_rate = 0.67 if 'term' in product else 0.80
                     agent = str(row.get('Agent', '')) if pd.notna(row.get('Agent')) else ''
+                    recruiter = str(row.get('Recruiter', '')) if pd.notna(row.get('Recruiter')) else ''
 
                     rows.append({
                         'Policy': row['Policy_Norm'],
@@ -115,7 +118,7 @@ with st.expander("📤 上传NLG报表", expanded=st.session_state.data is None)
                         'Premium': premium,
                         'CommRate': comm_rate,
                         'Agent': agent,
-                        'Person1': agent,  # 默认用Agent
+                        'Person1': recruiter if recruiter else agent,  # 优先用Recruiter
                         'Rate1': 0.55,
                         'Split1': 1.0,
                         'Person2': '',
@@ -124,7 +127,7 @@ with st.expander("📤 上传NLG报表", expanded=st.session_state.data is None)
                     })
 
                 st.session_state.data = pd.DataFrame(rows)
-                st.success(f"✅ 导入成功！{len(rows)} 条记录")
+                st.success(f"✅ Import successful! {len(rows)} records")
                 st.rerun()
 
 # ==================== 主数据表 ====================
@@ -161,47 +164,47 @@ if st.session_state.data is not None:
         total_comm = summary_df['Commission'].sum()
 
         with col1:
-            st.metric("📊 总佣金", f"${total_comm:,.2f}")
+            st.metric("📊 Total Commission", f"${total_comm:,.2f}")
         with col2:
-            st.metric("👥 分佣人数", len(summary_data))
+            st.metric("👥 Recruiters", len(summary_data))
         with col3:
-            st.metric("📋 记录数", len(df))
+            st.metric("📋 Records", len(df))
 
         # 汇总表
-        st.markdown("### 📈 分人汇总")
+        st.markdown("### 📈 Commission by Recruiter")
         for _, row in summary_df.iterrows():
             pct = row['Commission'] / total_comm * 100 if total_comm > 0 else 0
-            st.write(f"**{row['Person']}**: ${row['Commission']:,.2f} ({pct:.1f}%) - {row['Count']}单")
+            st.write(f"**{row['Person']}**: ${row['Commission']:,.2f} ({pct:.1f}%) - {row['Count']} policies")
 
     st.markdown("---")
 
     # ==================== 批量设置 ====================
-    st.markdown("### 🔧 批量设置")
+    st.markdown("### 🔧 Batch Settings")
     bcol1, bcol2, bcol3, bcol4, bcol5, bcol6, bcol7 = st.columns([2, 1, 1, 2, 1, 1, 2])
 
     with bcol1:
-        batch_p1 = st.text_input("分佣人1", key="bp1")
+        batch_p1 = st.text_input("Recruiter 1", key="bp1")
     with bcol2:
-        batch_r1 = st.number_input("比例1", 0.0, 1.0, 0.55, 0.01, key="br1")
+        batch_r1 = st.number_input("Rate 1", 0.0, 1.0, 0.55, 0.01, key="br1")
     with bcol3:
-        batch_s1 = st.number_input("分成1", 0.0, 1.0, 1.0, 0.1, key="bs1")
+        batch_s1 = st.number_input("Split 1", 0.0, 1.0, 1.0, 0.1, key="bs1")
     with bcol4:
-        batch_p2 = st.text_input("分佣人2", key="bp2")
+        batch_p2 = st.text_input("Recruiter 2", key="bp2")
     with bcol5:
-        batch_r2 = st.number_input("比例2", 0.0, 1.0, 0.55, 0.01, key="br2")
+        batch_r2 = st.number_input("Rate 2", 0.0, 1.0, 0.55, 0.01, key="br2")
     with bcol6:
-        batch_s2 = st.number_input("分成2", 0.0, 1.0, 0.0, 0.1, key="bs2")
+        batch_s2 = st.number_input("Split 2", 0.0, 1.0, 0.0, 0.1, key="bs2")
 
     with bcol7:
         total_split = batch_s1 + batch_s2
         if abs(total_split - 1.0) < 0.01:
-            st.success(f"✓ 分成={total_split:.1f}")
+            st.success(f"✓ Split={total_split:.1f}")
             can_apply = True
         else:
-            st.error(f"✗ 分成={total_split:.1f}≠1")
+            st.error(f"✗ Split={total_split:.1f}≠1")
             can_apply = False
 
-        if st.button("📝 应用到选中", disabled=not can_apply, type="primary"):
+        if st.button("📝 Apply", disabled=not can_apply, type="primary"):
             mask = st.session_state.data['_selected'] == True
             if mask.sum() > 0:
                 if batch_p1:
@@ -214,26 +217,26 @@ if st.session_state.data is not None:
                 st.session_state.data['_selected'] = False
                 st.rerun()
             else:
-                st.warning("请先选择行")
+                st.warning("Please select rows first")
 
     # 快捷按钮
     qcol1, qcol2, qcol3, qcol4 = st.columns(4)
     with qcol1:
-        if st.button("☑️ 全选"):
+        if st.button("☑️ Select All"):
             st.session_state.data['_selected'] = True
             st.rerun()
     with qcol2:
-        if st.button("⬜ 取消全选"):
+        if st.button("⬜ Deselect All"):
             st.session_state.data['_selected'] = False
             st.rerun()
     with qcol3:
         if '_selected' in st.session_state.data.columns:
-            st.info(f"已选: {st.session_state.data['_selected'].sum()} 条")
+            st.info(f"Selected: {st.session_state.data['_selected'].sum()}")
 
     st.markdown("---")
 
     # ==================== 数据表 ====================
-    st.markdown("### 📋 明细数据")
+    st.markdown("### 📋 Detail Data")
 
     # 添加选择列
     if '_selected' not in st.session_state.data.columns:
@@ -252,17 +255,17 @@ if st.session_state.data is not None:
         hide_index=True,
         column_config={
             '_selected': st.column_config.CheckboxColumn('✓', default=False, width='small'),
-            'Policy': st.column_config.TextColumn('保单号', disabled=True, width='small'),
-            'Insured': st.column_config.TextColumn('被保人', disabled=True, width='small'),
-            'Premium': st.column_config.NumberColumn('保费', disabled=True, format='$%.0f', width='small'),
-            'Person1': st.column_config.TextColumn('分佣人1', width='medium'),
-            'Rate1': st.column_config.NumberColumn('比例1', format='%.2f', width='small'),
-            'Split1': st.column_config.NumberColumn('分成1', format='%.1f', width='small'),
-            'Comm1': st.column_config.NumberColumn('佣金1', disabled=True, format='$%.2f', width='small'),
-            'Person2': st.column_config.TextColumn('分佣人2', width='medium'),
-            'Rate2': st.column_config.NumberColumn('比例2', format='%.2f', width='small'),
-            'Split2': st.column_config.NumberColumn('分成2', format='%.1f', width='small'),
-            'Comm2': st.column_config.NumberColumn('佣金2', disabled=True, format='$%.2f', width='small'),
+            'Policy': st.column_config.TextColumn('Policy', disabled=True, width='small'),
+            'Insured': st.column_config.TextColumn('Insured', disabled=True, width='small'),
+            'Premium': st.column_config.NumberColumn('Premium', disabled=True, format='$%.0f', width='small'),
+            'Person1': st.column_config.TextColumn('Recruiter 1', width='medium'),
+            'Rate1': st.column_config.NumberColumn('Rate 1', format='%.2f', width='small'),
+            'Split1': st.column_config.NumberColumn('Split 1', format='%.1f', width='small'),
+            'Comm1': st.column_config.NumberColumn('Comm 1', disabled=True, format='$%.2f', width='small'),
+            'Person2': st.column_config.TextColumn('Recruiter 2', width='medium'),
+            'Rate2': st.column_config.NumberColumn('Rate 2', format='%.2f', width='small'),
+            'Split2': st.column_config.NumberColumn('Split 2', format='%.1f', width='small'),
+            'Comm2': st.column_config.NumberColumn('Comm 2', disabled=True, format='$%.2f', width='small'),
         },
         column_order=['_selected', 'Policy', 'Insured', 'Premium', 'Person1', 'Rate1', 'Split1', 'Comm1', 'Person2', 'Rate2', 'Split2', 'Comm2'],
     )
@@ -284,12 +287,12 @@ if st.session_state.data is not None:
     for idx, row in st.session_state.data.iterrows():
         split_sum = row['Split1'] + row['Split2']
         if abs(split_sum - 1.0) > 0.01:
-            errors.append(f"{row['Policy']}: 分成={split_sum:.1f}")
+            errors.append(f"{row['Policy']}: Split={split_sum:.1f}")
 
     if errors:
-        st.error(f"❌ {len(errors)} 条分成比例错误: " + ", ".join(errors[:5]))
+        st.error(f"❌ {len(errors)} split errors: " + ", ".join(errors[:5]))
     else:
-        st.success("✅ 所有记录校验通过")
+        st.success("✅ All records validated")
 
         # 导出
         col1, col2 = st.columns(2)
@@ -301,11 +304,11 @@ if st.session_state.data is not None:
             export_df['Comm2'] = export_df['Premium'] * export_df['Rate2'] * export_df['Split2']
             export_df = export_df[['Policy', 'Insured', 'Premium', 'Person1', 'Rate1', 'Split1', 'Comm1', 'Person2', 'Rate2', 'Split2', 'Comm2']]
             export_df.to_excel(output, index=False, engine='openpyxl')
-            st.download_button("📥 下载明细", output.getvalue(), f"commission_detail_{datetime.now().strftime('%Y%m%d')}.xlsx")
+            st.download_button("📥 Download Detail", output.getvalue(), f"commission_detail_{datetime.now().strftime('%Y%m%d')}.xlsx")
 
         with col2:
             # 导出汇总
             if summary_data:
                 output2 = BytesIO()
                 pd.DataFrame(summary_data).to_excel(output2, index=False, engine='openpyxl')
-                st.download_button("📥 下载汇总", output2.getvalue(), f"commission_summary_{datetime.now().strftime('%Y%m%d')}.xlsx")
+                st.download_button("📥 Download Summary", output2.getvalue(), f"commission_summary_{datetime.now().strftime('%Y%m%d')}.xlsx")
