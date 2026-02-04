@@ -57,25 +57,30 @@ def parse_nlg_file(uploaded_file):
 
 # 解析zhubiao文件
 def parse_zhubiao(uploaded_file):
-    """解析zhubiao文件，返回policy到分佣信息的映射"""
+    """解析zhubiao文件，返回 (policy, insured) 到分佣信息的映射"""
     try:
         df = pd.read_excel(uploaded_file, header=0, engine='openpyxl')
         uploaded_file.seek(0)
 
-        # zhubiao列结构: A=Policy, H=Recruiter, I=Rate, J=Split, L=CFT, M=CFT Rate, N=CFT Split
-        result = {}
+        # zhubiao列结构: A=Policy, B=Insured, H=Recruiter, I=Rate, J=Split, L=CFT, M=CFT Rate, N=CFT Split
+        result_by_policy = {}      # 按保单号匹配
+        result_by_insured = {}     # 按客户名匹配（备用）
+
         for idx, row in df.iterrows():
-            # 获取保单号 (第一列)
+            # 获取保单号 (第一列A)
             policy_raw = row.iloc[0] if len(row) > 0 else None
             if not is_valid_policy(policy_raw):
                 continue
             policy = normalize_policy(policy_raw)
 
-            # 获取分佣信息
-            recruiter = str(row.iloc[7]) if len(row) > 7 and pd.notna(row.iloc[7]) else ''
+            # 获取客户名 (第二列B)
+            insured = str(row.iloc[1]).strip() if len(row) > 1 and pd.notna(row.iloc[1]) else ''
+
+            # 获取分佣信息 (H=7, I=8, J=9, L=11, M=12, N=13)
+            recruiter = str(row.iloc[7]).strip() if len(row) > 7 and pd.notna(row.iloc[7]) else ''
             rate1 = safe_float(row.iloc[8], 55) if len(row) > 8 else 55
             split1 = safe_float(row.iloc[9], 100) if len(row) > 9 else 100
-            cft = str(row.iloc[11]) if len(row) > 11 and pd.notna(row.iloc[11]) else ''
+            cft = str(row.iloc[11]).strip() if len(row) > 11 and pd.notna(row.iloc[11]) else ''
             rate2 = safe_float(row.iloc[12], 55) if len(row) > 12 else 55
             split2 = safe_float(row.iloc[13], 0) if len(row) > 13 else 0
 
@@ -85,15 +90,24 @@ def parse_zhubiao(uploaded_file):
             if rate2 < 1: rate2 = rate2 * 100
             if split2 < 1 and split2 > 0: split2 = split2 * 100
 
-            result[policy] = {
+            info = {
                 'Recruiter': recruiter,
                 'Rate1': int(rate1),
                 'Split1': int(split1),
-                'CFT': cft if cft and cft != '-' and cft != 'nan' else '',
+                'CFT': cft if cft and cft != '-' and cft.lower() != 'nan' else '',
                 'Rate2': int(rate2),
-                'Split2': int(split2)
+                'Split2': int(split2),
+                'Insured': insured
             }
-        return result, None
+
+            # 保存到两个映射
+            result_by_policy[policy] = info
+            if insured:
+                # 标准化客户名（去空格、转小写）用于匹配
+                insured_key = insured.lower().replace(' ', '')
+                result_by_insured[insured_key] = info
+
+        return {'by_policy': result_by_policy, 'by_insured': result_by_insured}, None
     except Exception as e:
         return None, str(e)
 
@@ -158,16 +172,17 @@ with st.expander("📤 Upload NLG Report", expanded=st.session_state.data is Non
 
                     rows.append({
                         'Policy': row['Policy_Norm'],
-                        'Insured': str(row.get('Insured', ''))[:20] if pd.notna(row.get('Insured')) else '',
+                        'Insured': str(row.get('Insured', ''))[:30] if pd.notna(row.get('Insured')) else '',
                         'Premium': premium,
                         'CommRate': int(comm_rate * 100),  # 百分比格式 (80 or 67)
                         'Agent': agent,
-                        'Person1': recruiter if recruiter else agent,  # 优先用Recruiter
-                        'Rate1': 55,      # 百分比格式
-                        'Split1': 100,    # 百分比格式
+                        'Person1': '',     # 待从zhubiao匹配
+                        'Rate1': 55,       # 默认值
+                        'Split1': 100,     # 默认值
                         'Person2': '',
-                        'Rate2': 55,      # 百分比格式
-                        'Split2': 0,      # 百分比格式
+                        'Rate2': 55,
+                        'Split2': 0,
+                        'MatchStatus': '❓ 未匹配'  # 匹配状态
                     })
 
                 st.session_state.data = pd.DataFrame(rows)
@@ -176,21 +191,48 @@ with st.expander("📤 Upload NLG Report", expanded=st.session_state.data is Non
 
 # ==================== zhubiao匹配区域 ====================
 if st.session_state.data is not None:
-    with st.expander("📎 Upload zhubiao (Optional - Auto Match)", expanded=False):
+    with st.expander("📎 Upload zhubiao (Auto Match by Policy + Insured)", expanded=True):
         zhubiao_file = st.file_uploader("Select zhubiao Excel file", type=['xlsx', 'xls'], key="zhubiao")
 
-        if zhubiao_file and st.button("🔄 Match from zhubiao", type="secondary"):
-            zhubiao_map, error = parse_zhubiao(zhubiao_file)
+        if zhubiao_file and st.button("🔄 Match from zhubiao", type="primary"):
+            zhubiao_maps, error = parse_zhubiao(zhubiao_file)
             if error:
                 st.error(f"❌ Parse error: {error}")
             else:
-                st.session_state.zhubiao_map = zhubiao_map
+                st.session_state.zhubiao_map = zhubiao_maps
+                by_policy = zhubiao_maps['by_policy']
+                by_insured = zhubiao_maps['by_insured']
+
                 # 匹配并更新数据
-                matched = 0
+                matched_by_policy = 0
+                matched_by_insured = 0
+                unmatched = 0
+
                 for idx, row in st.session_state.data.iterrows():
                     policy = row['Policy']
-                    if policy in zhubiao_map:
-                        info = zhubiao_map[policy]
+                    insured = row['Insured']
+                    insured_key = insured.lower().replace(' ', '') if insured else ''
+
+                    info = None
+                    match_type = ''
+
+                    # 优先按保单号匹配
+                    if policy in by_policy:
+                        info = by_policy[policy]
+                        match_type = '✅ Policy匹配'
+                        matched_by_policy += 1
+                    # 其次按客户名匹配
+                    elif insured_key and insured_key in by_insured:
+                        info = by_insured[insured_key]
+                        match_type = '🔄 Insured匹配'
+                        matched_by_insured += 1
+                    else:
+                        unmatched += 1
+                        st.session_state.data.loc[idx, 'MatchStatus'] = '❌ 未找到匹配'
+                        continue
+
+                    # 更新数据
+                    if info:
                         if info['Recruiter']:
                             st.session_state.data.loc[idx, 'Person1'] = info['Recruiter']
                         st.session_state.data.loc[idx, 'Rate1'] = info['Rate1']
@@ -198,8 +240,14 @@ if st.session_state.data is not None:
                         st.session_state.data.loc[idx, 'Person2'] = info['CFT']
                         st.session_state.data.loc[idx, 'Rate2'] = info['Rate2']
                         st.session_state.data.loc[idx, 'Split2'] = info['Split2']
-                        matched += 1
-                st.success(f"✅ Matched {matched}/{len(st.session_state.data)} records from zhubiao")
+                        st.session_state.data.loc[idx, 'MatchStatus'] = match_type
+
+                # 显示匹配结果
+                st.success(f"✅ 匹配完成!")
+                st.write(f"- 按保单号匹配: {matched_by_policy} 条")
+                st.write(f"- 按客户名匹配: {matched_by_insured} 条")
+                if unmatched > 0:
+                    st.warning(f"- ❌ 未匹配: {unmatched} 条 (需手动填写)")
                 st.rerun()
 
 # ==================== 主数据表 ====================
@@ -314,8 +362,30 @@ if st.session_state.data is not None:
     if '_selected' not in st.session_state.data.columns:
         st.session_state.data['_selected'] = False
 
+    # 显示匹配状态统计
+    if 'MatchStatus' in st.session_state.data.columns:
+        status_counts = st.session_state.data['MatchStatus'].value_counts()
+        scol1, scol2, scol3 = st.columns(3)
+        with scol1:
+            matched = len(st.session_state.data[st.session_state.data['MatchStatus'].str.contains('✅|🔄', na=False)])
+            st.metric("✅ 已匹配", matched)
+        with scol2:
+            unmatched = len(st.session_state.data[st.session_state.data['MatchStatus'].str.contains('❌|❓', na=False)])
+            st.metric("❌ 未匹配", unmatched)
+        with scol3:
+            st.metric("📋 总计", len(st.session_state.data))
+
     # 显示表格
-    display_df = st.session_state.data[['_selected', 'Policy', 'Insured', 'CommRate', 'Premium', 'Person1', 'Rate1', 'Split1', 'Person2', 'Rate2', 'Split2']].copy()
+    display_cols = ['_selected', 'MatchStatus', 'Policy', 'Insured', 'CommRate', 'Premium', 'Person1', 'Rate1', 'Split1', 'Person2', 'Rate2', 'Split2']
+    # 确保所有列都存在
+    for col in display_cols:
+        if col not in st.session_state.data.columns:
+            if col == 'MatchStatus':
+                st.session_state.data[col] = '❓ 未匹配'
+            else:
+                st.session_state.data[col] = ''
+
+    display_df = st.session_state.data[display_cols].copy()
 
     # 计算佣金用于显示 (百分比需要除以100)
     display_df['Comm1'] = st.session_state.data['Premium'] * (st.session_state.data['Rate1']/100) * (st.session_state.data['Split1']/100)
@@ -327,8 +397,9 @@ if st.session_state.data is not None:
         hide_index=True,
         column_config={
             '_selected': st.column_config.CheckboxColumn('✓', default=False, width='small'),
+            'MatchStatus': st.column_config.TextColumn('Status', disabled=True, width='small'),
             'Policy': st.column_config.TextColumn('Policy', disabled=True, width='small'),
-            'Insured': st.column_config.TextColumn('Insured', disabled=True, width='small'),
+            'Insured': st.column_config.TextColumn('Insured', disabled=True, width='medium'),
             'CommRate': st.column_config.NumberColumn('Comm Rate %', disabled=True, format='%.0f%%', width='small'),
             'Premium': st.column_config.NumberColumn('Gross Comm Earned', disabled=True, format='$%.2f', width='small'),
             'Person1': st.column_config.TextColumn('Recruiter', width='medium'),
@@ -340,7 +411,7 @@ if st.session_state.data is not None:
             'Split2': st.column_config.NumberColumn('CFT分佣比例', format='%.0f%%', width='small'),
             'Comm2': st.column_config.NumberColumn('CFT佣金', disabled=True, format='$%.2f', width='small'),
         },
-        column_order=['_selected', 'Policy', 'Insured', 'CommRate', 'Premium', 'Person1', 'Rate1', 'Split1', 'Comm1', 'Person2', 'Rate2', 'Split2', 'Comm2'],
+        column_order=['_selected', 'MatchStatus', 'Policy', 'Insured', 'CommRate', 'Premium', 'Person1', 'Rate1', 'Split1', 'Comm1', 'Person2', 'Rate2', 'Split2', 'Comm2'],
     )
 
     # 更新数据
@@ -377,6 +448,7 @@ if st.session_state.data is not None:
             export_df['Comm2'] = export_df['Premium'] * (export_df['Rate2']/100) * (export_df['Split2']/100)
             # 重命名列名匹配zhubiao格式
             export_df = export_df.rename(columns={
+                'MatchStatus': 'Match Status',
                 'CommRate': 'Comm Rate %',
                 'Premium': 'Gross Comm Earned',
                 'Person1': 'Recruiter',
@@ -388,7 +460,8 @@ if st.session_state.data is not None:
                 'Split2': 'CFT分佣比例',
                 'Comm2': 'CFT佣金'
             })
-            export_df = export_df[['Policy', 'Insured', 'Comm Rate %', 'Gross Comm Earned', 'Recruiter', 'Recruiter佣金比例', 'Recruiter分佣比例', 'Recruiter佣金', 'CFT', 'CFT比例', 'CFT分佣比例', 'CFT佣金']]
+            export_cols = ['Policy', 'Insured', 'Match Status', 'Comm Rate %', 'Gross Comm Earned', 'Recruiter', 'Recruiter佣金比例', 'Recruiter分佣比例', 'Recruiter佣金', 'CFT', 'CFT比例', 'CFT分佣比例', 'CFT佣金']
+            export_df = export_df[[c for c in export_cols if c in export_df.columns]]
             export_df.to_excel(output, index=False, engine='openpyxl')
             st.download_button("📥 Download Detail", output.getvalue(), f"commission_detail_{datetime.now().strftime('%Y%m%d')}.xlsx")
 
