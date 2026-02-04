@@ -55,9 +55,53 @@ def parse_nlg_file(uploaded_file):
             continue
     return None, "Unable to parse file"
 
+# 解析zhubiao文件
+def parse_zhubiao(uploaded_file):
+    """解析zhubiao文件，返回policy到分佣信息的映射"""
+    try:
+        df = pd.read_excel(uploaded_file, header=0, engine='openpyxl')
+        uploaded_file.seek(0)
+
+        # zhubiao列结构: A=Policy, H=Recruiter, I=Rate, J=Split, L=CFT, M=CFT Rate, N=CFT Split
+        result = {}
+        for idx, row in df.iterrows():
+            # 获取保单号 (第一列)
+            policy_raw = row.iloc[0] if len(row) > 0 else None
+            if not is_valid_policy(policy_raw):
+                continue
+            policy = normalize_policy(policy_raw)
+
+            # 获取分佣信息
+            recruiter = str(row.iloc[7]) if len(row) > 7 and pd.notna(row.iloc[7]) else ''
+            rate1 = safe_float(row.iloc[8], 55) if len(row) > 8 else 55
+            split1 = safe_float(row.iloc[9], 100) if len(row) > 9 else 100
+            cft = str(row.iloc[11]) if len(row) > 11 and pd.notna(row.iloc[11]) else ''
+            rate2 = safe_float(row.iloc[12], 55) if len(row) > 12 else 55
+            split2 = safe_float(row.iloc[13], 0) if len(row) > 13 else 0
+
+            # 处理百分比格式 (如果是小数则转为百分比)
+            if rate1 < 1: rate1 = rate1 * 100
+            if split1 < 1 and split1 > 0: split1 = split1 * 100
+            if rate2 < 1: rate2 = rate2 * 100
+            if split2 < 1 and split2 > 0: split2 = split2 * 100
+
+            result[policy] = {
+                'Recruiter': recruiter,
+                'Rate1': int(rate1),
+                'Split1': int(split1),
+                'CFT': cft if cft and cft != '-' and cft != 'nan' else '',
+                'Rate2': int(rate2),
+                'Split2': int(split2)
+            }
+        return result, None
+    except Exception as e:
+        return None, str(e)
+
 # Session State
 if 'data' not in st.session_state:
     st.session_state.data = None
+if 'zhubiao_map' not in st.session_state:
+    st.session_state.zhubiao_map = None
 
 # ==================== 页面标题 ====================
 st.title("💰 佣金管理系统 v3.0")
@@ -116,7 +160,7 @@ with st.expander("📤 Upload NLG Report", expanded=st.session_state.data is Non
                         'Policy': row['Policy_Norm'],
                         'Insured': str(row.get('Insured', ''))[:20] if pd.notna(row.get('Insured')) else '',
                         'Premium': premium,
-                        'CommRate': comm_rate,
+                        'CommRate': int(comm_rate * 100),  # 百分比格式 (80 or 67)
                         'Agent': agent,
                         'Person1': recruiter if recruiter else agent,  # 优先用Recruiter
                         'Rate1': 55,      # 百分比格式
@@ -128,6 +172,34 @@ with st.expander("📤 Upload NLG Report", expanded=st.session_state.data is Non
 
                 st.session_state.data = pd.DataFrame(rows)
                 st.success(f"✅ Import successful! {len(rows)} records")
+                st.rerun()
+
+# ==================== zhubiao匹配区域 ====================
+if st.session_state.data is not None:
+    with st.expander("📎 Upload zhubiao (Optional - Auto Match)", expanded=False):
+        zhubiao_file = st.file_uploader("Select zhubiao Excel file", type=['xlsx', 'xls'], key="zhubiao")
+
+        if zhubiao_file and st.button("🔄 Match from zhubiao", type="secondary"):
+            zhubiao_map, error = parse_zhubiao(zhubiao_file)
+            if error:
+                st.error(f"❌ Parse error: {error}")
+            else:
+                st.session_state.zhubiao_map = zhubiao_map
+                # 匹配并更新数据
+                matched = 0
+                for idx, row in st.session_state.data.iterrows():
+                    policy = row['Policy']
+                    if policy in zhubiao_map:
+                        info = zhubiao_map[policy]
+                        if info['Recruiter']:
+                            st.session_state.data.loc[idx, 'Person1'] = info['Recruiter']
+                        st.session_state.data.loc[idx, 'Rate1'] = info['Rate1']
+                        st.session_state.data.loc[idx, 'Split1'] = info['Split1']
+                        st.session_state.data.loc[idx, 'Person2'] = info['CFT']
+                        st.session_state.data.loc[idx, 'Rate2'] = info['Rate2']
+                        st.session_state.data.loc[idx, 'Split2'] = info['Split2']
+                        matched += 1
+                st.success(f"✅ Matched {matched}/{len(st.session_state.data)} records from zhubiao")
                 st.rerun()
 
 # ==================== 主数据表 ====================
@@ -243,7 +315,7 @@ if st.session_state.data is not None:
         st.session_state.data['_selected'] = False
 
     # 显示表格
-    display_df = st.session_state.data[['_selected', 'Policy', 'Insured', 'Premium', 'Person1', 'Rate1', 'Split1', 'Person2', 'Rate2', 'Split2']].copy()
+    display_df = st.session_state.data[['_selected', 'Policy', 'Insured', 'CommRate', 'Premium', 'Person1', 'Rate1', 'Split1', 'Person2', 'Rate2', 'Split2']].copy()
 
     # 计算佣金用于显示 (百分比需要除以100)
     display_df['Comm1'] = st.session_state.data['Premium'] * (st.session_state.data['Rate1']/100) * (st.session_state.data['Split1']/100)
@@ -257,6 +329,7 @@ if st.session_state.data is not None:
             '_selected': st.column_config.CheckboxColumn('✓', default=False, width='small'),
             'Policy': st.column_config.TextColumn('Policy', disabled=True, width='small'),
             'Insured': st.column_config.TextColumn('Insured', disabled=True, width='small'),
+            'CommRate': st.column_config.NumberColumn('Comm Rate %', disabled=True, format='%.0f%%', width='small'),
             'Premium': st.column_config.NumberColumn('Gross Comm Earned', disabled=True, format='$%.2f', width='small'),
             'Person1': st.column_config.TextColumn('Recruiter', width='medium'),
             'Rate1': st.column_config.NumberColumn('Recruiter佣金比例', format='%.0f%%', width='small'),
@@ -267,7 +340,7 @@ if st.session_state.data is not None:
             'Split2': st.column_config.NumberColumn('CFT分佣比例', format='%.0f%%', width='small'),
             'Comm2': st.column_config.NumberColumn('CFT佣金', disabled=True, format='$%.2f', width='small'),
         },
-        column_order=['_selected', 'Policy', 'Insured', 'Premium', 'Person1', 'Rate1', 'Split1', 'Comm1', 'Person2', 'Rate2', 'Split2', 'Comm2'],
+        column_order=['_selected', 'Policy', 'Insured', 'CommRate', 'Premium', 'Person1', 'Rate1', 'Split1', 'Comm1', 'Person2', 'Rate2', 'Split2', 'Comm2'],
     )
 
     # 更新数据
@@ -304,6 +377,7 @@ if st.session_state.data is not None:
             export_df['Comm2'] = export_df['Premium'] * (export_df['Rate2']/100) * (export_df['Split2']/100)
             # 重命名列名匹配zhubiao格式
             export_df = export_df.rename(columns={
+                'CommRate': 'Comm Rate %',
                 'Premium': 'Gross Comm Earned',
                 'Person1': 'Recruiter',
                 'Rate1': 'Recruiter佣金比例',
@@ -314,7 +388,7 @@ if st.session_state.data is not None:
                 'Split2': 'CFT分佣比例',
                 'Comm2': 'CFT佣金'
             })
-            export_df = export_df[['Policy', 'Insured', 'Gross Comm Earned', 'Recruiter', 'Recruiter佣金比例', 'Recruiter分佣比例', 'Recruiter佣金', 'CFT', 'CFT比例', 'CFT分佣比例', 'CFT佣金']]
+            export_df = export_df[['Policy', 'Insured', 'Comm Rate %', 'Gross Comm Earned', 'Recruiter', 'Recruiter佣金比例', 'Recruiter分佣比例', 'Recruiter佣金', 'CFT', 'CFT比例', 'CFT分佣比例', 'CFT佣金']]
             export_df.to_excel(output, index=False, engine='openpyxl')
             st.download_button("📥 Download Detail", output.getvalue(), f"commission_detail_{datetime.now().strftime('%Y%m%d')}.xlsx")
 
